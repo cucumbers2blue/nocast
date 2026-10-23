@@ -286,7 +286,9 @@ mod tests {
         std::fs::create_dir_all(apps.join("Adobe Photoshop 2025/Adobe Photoshop 2025.app")).unwrap();
         unsafe { std::env::set_var("HOME", &home) };
         assert_eq!(find_app("Logic Pro"), Some(apps.join("Logic Pro X.app")));
-        assert_eq!(find_app("logic pro x"), Some(apps.join("Logic Pro X.app")));
+        // Lowercase also works (macOS may keep the typed casing in the path).
+        let lower = find_app("logic pro x").unwrap();
+        assert_eq!(lower.to_string_lossy().to_lowercase(), apps.join("logic pro x.app").to_string_lossy().to_lowercase());
         assert_eq!(
             find_app("Adobe Photoshop"),
             Some(apps.join("Adobe Photoshop 2025/Adobe Photoshop 2025.app"))
