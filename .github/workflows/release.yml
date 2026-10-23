@@ -1,0 +1,44 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/**", "Cargo.*", "bundle/**", "install.sh", ".github/workflows/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust
+        run: rustup update stable && rustup default stable
+
+      - name: Test
+        run: cargo test
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Bundle
+        run: |
+          VERSION="0.1.${{ github.run_number }}"
+          mkdir -p nocast.app/Contents/MacOS
+          cp target/release/nocast nocast.app/Contents/MacOS/
+          sed "s/__VERSION__/$VERSION/g" bundle/Info.plist > nocast.app/Contents/Info.plist
+          codesign --force --sign - --identifier com.github.cucumbers2blue.nocast nocast.app
+          ditto -c -k --keepParent nocast.app nocast.zip
+          ls -l target/release/nocast nocast.zip
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" nocast.zip install.sh \
+            --title "nocast $VERSION" --latest \
+            --notes "Install or update: \`curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sh\`"
