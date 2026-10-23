@@ -6,6 +6,7 @@
 mod config;
 mod ffi;
 mod launcher;
+mod safari;
 mod windows;
 
 use config::{Action, Config, MODS};
@@ -116,11 +117,17 @@ extern "C" fn run_action(ctx: *mut c_void) {
     }
 }
 
-/// Opens (or focuses) an app. With `toggle`, hides it if it's already in front.
+/// Opens (or focuses) an app or website. With `toggle`, hides an app that's already in front.
 pub fn open_app(i: usize, toggle: bool) {
-    let Some((path, name)) = with_config(|c| c.apps.get(i).map(|a| (a.path.clone(), a.name.clone()))) else {
+    let Some((path, name, url)) =
+        with_config(|c| c.apps.get(i).map(|a| (a.path.clone(), a.name.clone(), a.url.clone())))
+    else {
         return;
     };
+    if let Some(url) = url {
+        safari::open(&url);
+        return;
+    }
     let ws = NSWorkspace::sharedWorkspace();
     let Some(path) = path else {
         // Not found in the usual folders; ask macOS to find it by name.

@@ -269,7 +269,7 @@ impl Launcher {
                 }
                 s.matches.get(s.sel).map(|&i| {
                     let a = &c.apps[i];
-                    (a.name.clone(), a.path.is_some())
+                    (a.name.clone(), a.path.is_some() || a.url.is_some())
                 })
             });
             (s.query.clone(), found)

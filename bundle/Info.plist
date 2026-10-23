@@ -10,5 +10,6 @@
     <key>CFBundleVersion</key>           <string>__VERSION__</string>
     <key>LSMinimumSystemVersion</key>    <string>13.0</string>
     <key>LSUIElement</key>               <true/>
+    <key>NSAppleEventsUsageDescription</key><string>nocast switches to the Safari tab that already has your website open.</string>
 </dict>
 </plist>

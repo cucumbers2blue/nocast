@@ -16,6 +16,7 @@ launchctl bootout "$DOMAIN/$ID" 2>/dev/null || true
 if [ "${1:-}" = "uninstall" ]; then
     rm -rf "$APP" "$AGENT"
     tccutil reset Accessibility "$ID" >/dev/null 2>&1 || true
+    tccutil reset AppleEvents "$ID" >/dev/null 2>&1 || true
     echo "nocast removed. Your config is still at ~/.config/nocast.conf"
     exit 0
 fi
@@ -29,8 +30,9 @@ mkdir -p "$HOME/Applications" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 rm -rf "$APP"
 ditto -x -k "$TMP/nocast.zip" "$HOME/Applications"
 
-# Each build is a new binary, so macOS forgets the old permission. Clear the stale entry.
+# Each build is a new binary, so macOS forgets the old permissions. Clear the stale entries.
 tccutil reset Accessibility "$ID" >/dev/null 2>&1 || true
+tccutil reset AppleEvents "$ID" >/dev/null 2>&1 || true
 
 # Start at login, restart if it ever crashes.
 cat > "$AGENT" <<PLIST
@@ -57,5 +59,6 @@ nocast is installed and running.
    and turn nocast on. Hotkeys start working right away.
 2. To use cmd+space, turn off Spotlight's shortcut:
    System Settings > Keyboard > Keyboard Shortcuts > Spotlight.
-3. Edit your config:  open -e ~/.config/nocast.conf   (saved changes apply instantly)
+3. The first time you open a website, allow nocast to control Safari.
+4. Edit your config:  open -e ~/.config/nocast.conf   (saved changes apply instantly)
 MSG

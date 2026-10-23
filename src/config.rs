@@ -20,6 +20,10 @@ Notes       opt+k
 Reminders   opt+l
 Finder
 
+# websites: a name, the address, an optional hotkey.
+# If the site is already open in Safari, nocast switches to that tab.
+# Gmail   https://mail.google.com   opt+g
+
 full    opt+up
 left    opt+left
 right   opt+right
@@ -53,10 +57,12 @@ pub enum Action {
     Win(Win),
 }
 
+/// An app, or a website when `url` is set.
 pub struct App {
     pub name: String,
     pub hotkey: Option<Hotkey>,
     pub path: Option<PathBuf>,
+    pub url: Option<String>,
 }
 
 #[derive(Default)]
@@ -103,11 +109,12 @@ impl Config {
                 continue;
             }
 
-            // Anything else is an app: its name, plus an optional hotkey (a word with '+').
+            // Anything else is an app or website: a name, an optional URL, an optional hotkey.
             let mut words: Vec<&str> = line.split_whitespace().collect();
             if words.len() > 2 && words[0] == "app" {
                 words.drain(..2); // old format: "app keyword [hotkey] Name"
             }
+            let url = words.iter().position(|w| w.contains("://")).map(|i| words.remove(i).to_string());
             let mut hotkey = None;
             if let Some(i) = words.iter().position(|w| w.contains('+')) {
                 hotkey = parse_hotkey(words[i]);
@@ -117,6 +124,16 @@ impl Config {
                 words.remove(i);
             }
             let name = words.join(" ");
+            if let Some(url) = url {
+                // No name given: use the site's address, e.g. "mail.google.com".
+                let name = if name.is_empty() {
+                    url.split_once("://").map_or(url.as_str(), |(_, r)| r).trim_end_matches('/').to_string()
+                } else {
+                    name
+                };
+                cfg.apps.push(App { name, hotkey, path: None, url: Some(url) });
+                continue;
+            }
             if name.is_empty() {
                 continue;
             }
@@ -125,7 +142,7 @@ impl Config {
                 eprintln!("nocast: app not found: {name}");
             }
             let display = name.rsplit('/').next().unwrap_or(&name).trim_end_matches(".app");
-            cfg.apps.push(App { name: display.to_string(), hotkey, path });
+            cfg.apps.push(App { name: display.to_string(), hotkey, path, url: None });
         }
         cfg
     }
@@ -295,5 +312,17 @@ mod tests {
         );
         assert_eq!(find_app("Nope"), None);
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn websites() {
+        let c = Config::parse("Gmail https://mail.google.com opt+g\nhttps://github.com/a+b/\nMy Site  ctrl+opt+m  https://x.com/?q=1+2\n");
+        let sites: Vec<(&str, Option<&str>, Option<Hotkey>)> =
+            c.apps.iter().map(|a| (a.name.as_str(), a.url.as_deref(), a.hotkey)).collect();
+        assert_eq!(sites, [
+            ("Gmail", Some("https://mail.google.com"), Some(Hotkey { key: 5, mods: OPT })),
+            ("github.com/a+b", Some("https://github.com/a+b/"), None),
+            ("My Site", Some("https://x.com/?q=1+2"), Some(Hotkey { key: 46, mods: CTRL | OPT })),
+        ]);
     }
 }
