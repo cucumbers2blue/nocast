@@ -98,8 +98,11 @@ tell application "Safari"
         try
             set res to "front" & tabChar & (id of window 1) & tabChar & (index of current tab of window 1) & linefeed
         end try
-        repeat with widRef in (id of every window)
-            set wid to contents of widRef
+        -- Fetch the ids first: looping over "id of every window" directly
+        -- makes AppleScript ask Safari for "item 1 of id of every window".
+        set wids to id of every window
+        repeat with n from 1 to count of wids
+            set wid to item n of wids
             try
                 set urls to URL of every tab of window id wid
                 repeat with i from 1 to count of urls
