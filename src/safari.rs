@@ -1,9 +1,11 @@
 // Websites: jump to the Safari tab that already has the site open, or open it.
 // Talks to Safari with AppleScript (macOS asks once for permission).
 
-use objc2::AnyThread;
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{msg_send, AnyThread};
 use objc2_app_kit::{NSRunningApplication, NSWorkspace};
-use objc2_foundation::{NSAppleScript, NSString};
+use objc2_foundation::{NSAppleEventDescriptor, NSAppleScript, NSDictionary, NSString};
 
 const SAFARI: &str = "com.apple.Safari";
 
@@ -60,12 +62,12 @@ pub fn open(url: &str) {
 /// One line per tab: "window id<TAB>tab index<TAB>url". The first line is
 /// "front<TAB>window id<TAB>current tab index" for the frontmost window.
 const LIST_TABS: &str = r#"
-set sep to character id 9
-set out to ""
+set tabChar to character id 9
+set res to ""
 tell application "Safari"
     with timeout of 30 seconds
         try
-            set out to "front" & sep & (id of window 1) & sep & (index of current tab of window 1) & linefeed
+            set res to "front" & tabChar & (id of window 1) & tabChar & (index of current tab of window 1) & linefeed
         end try
         repeat with widRef in (id of every window)
             set wid to contents of widRef
@@ -74,25 +76,31 @@ tell application "Safari"
                 repeat with i from 1 to count of urls
                     set u to item i of urls
                     if u is missing value then set u to ""
-                    set out to out & wid & sep & i & sep & u & linefeed
+                    set res to res & wid & tabChar & i & tabChar & u & linefeed
                 end repeat
             end try
         end repeat
     end timeout
 end tell
-return out
+return res
 "#;
 
 fn run(source: &str) -> Option<String> {
     let script = NSAppleScript::initWithSource(NSAppleScript::alloc(), &NSString::from_str(source))?;
-    let mut error = None;
-    let result = unsafe { script.executeAndReturnError(Some(&mut error)) };
+    let mut error: Option<Retained<NSDictionary<NSString, AnyObject>>> = None;
+    // Returns nil on error (the generated binding assumes it never does, so call it directly).
+    let result: Option<Retained<NSAppleEventDescriptor>> =
+        unsafe { msg_send![&*script, executeAndReturnError: Some(&mut error)] };
     if let Some(e) = error {
-        let msg = e.objectForKey(&NSString::from_str("NSAppleScriptErrorMessage")).map(|m| format!("{m:?}"));
-        eprintln!("nocast: Safari script failed: {}", msg.unwrap_or_else(|| format!("{e:?}")));
+        let get = |k: &str| e.objectForKey(&NSString::from_str(k)).map(|v| format!("{v:?}")).unwrap_or_default();
+        eprintln!(
+            "nocast: Safari script failed ({}): {}",
+            get("NSAppleScriptErrorNumber"),
+            get("NSAppleScriptErrorMessage")
+        );
         return None;
     }
-    Some(result.stringValue().map(|s| s.to_string()).unwrap_or_default())
+    Some(result?.stringValue().map(|s| s.to_string()).unwrap_or_default())
 }
 
 #[derive(Debug, Default)]
