@@ -173,24 +173,55 @@ pub fn keycode(k: &str) -> Option<u16> {
 }
 
 /// "Safari" -> /Applications/Safari.app. A full path to a .app also works.
+/// Falls back to the first app whose name starts with it ("Logic Pro" -> "Logic Pro X.app"),
+/// also looking one folder deep in /Applications.
 fn find_app(name: &str) -> Option<PathBuf> {
     if name.starts_with('/') || name.starts_with('~') {
         let p = PathBuf::from(name.replacen('~', &home(), 1));
         return p.exists().then_some(p);
     }
-    let file = if name.ends_with(".app") { name.to_string() } else { format!("{name}.app") };
-    let home_apps = format!("{}/Applications", home());
-    [
+    let name = name.trim_end_matches(".app");
+    let mut dirs: Vec<PathBuf> = [
         "/Applications",
         "/System/Applications",
         "/System/Applications/Utilities",
         "/Applications/Utilities",
-        home_apps.as_str(),
         "/System/Library/CoreServices",
     ]
     .iter()
-    .map(|d| PathBuf::from(d).join(&file))
-    .find(|p| p.exists())
+    .map(PathBuf::from)
+    .collect();
+    dirs.push(PathBuf::from(home()).join("Applications"));
+    if let Some(p) = dirs.iter().map(|d| d.join(format!("{name}.app"))).find(|p| p.exists()) {
+        return Some(p);
+    }
+    for d in ["/Applications".into(), PathBuf::from(home()).join("Applications")] {
+        if let Ok(entries) = std::fs::read_dir(&d) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() && p.extension().is_none() {
+                    dirs.push(p); // e.g. /Applications/Adobe Photoshop 2025/
+                }
+            }
+        }
+    }
+    let want = name.to_lowercase();
+    for d in &dirs {
+        let Ok(entries) = std::fs::read_dir(d) else { continue };
+        let mut hits: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                let f = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                f.ends_with(".app") && f.starts_with(&want)
+            })
+            .collect();
+        hits.sort(); // shortest / alphabetical first
+        if let Some(p) = hits.into_iter().next() {
+            return Some(p);
+        }
+    }
+    None
 }
 
 pub fn home() -> String {
@@ -245,5 +276,22 @@ mod tests {
             (Hotkey { key: 126, mods: OPT }, Win::Full),
             (Hotkey { key: 123, mods: OPT }, Win::Left),
         ]);
+    }
+
+    #[test]
+    fn finds_apps_by_prefix_and_in_subfolders() {
+        let home = std::env::temp_dir().join(format!("nocast-test-{}", std::process::id()));
+        let apps = home.join("Applications");
+        std::fs::create_dir_all(apps.join("Logic Pro X.app")).unwrap();
+        std::fs::create_dir_all(apps.join("Adobe Photoshop 2025/Adobe Photoshop 2025.app")).unwrap();
+        unsafe { std::env::set_var("HOME", &home) };
+        assert_eq!(find_app("Logic Pro"), Some(apps.join("Logic Pro X.app")));
+        assert_eq!(find_app("logic pro x"), Some(apps.join("Logic Pro X.app")));
+        assert_eq!(
+            find_app("Adobe Photoshop"),
+            Some(apps.join("Adobe Photoshop 2025/Adobe Photoshop 2025.app"))
+        );
+        assert_eq!(find_app("Nope"), None);
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }

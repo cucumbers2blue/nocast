@@ -267,7 +267,10 @@ impl Launcher {
                 if s.sel >= s.matches.len() {
                     s.sel = 0;
                 }
-                s.matches.get(s.sel).map(|&i| c.apps[i].name.clone())
+                s.matches.get(s.sel).map(|&i| {
+                    let a = &c.apps[i];
+                    (a.name.clone(), a.path.is_some())
+                })
             });
             (s.query.clone(), found)
         };
@@ -277,8 +280,12 @@ impl Launcher {
             text.appendAttributedString(&styled("Search apps", &NSColor::tertiaryLabelColor(), &font));
         } else {
             text.appendAttributedString(&styled(&query, &NSColor::labelColor(), &font));
-            if let Some(name) = name {
-                text.appendAttributedString(&styled(&completion(&query, &name), &NSColor::tertiaryLabelColor(), &font));
+            if let Some((name, found)) = name {
+                let mut rest = completion(&query, &name);
+                if !found {
+                    rest.push_str("  (not found)");
+                }
+                text.appendAttributedString(&styled(&rest, &NSColor::tertiaryLabelColor(), &font));
             }
         }
         self.query_label.setAttributedStringValue(&text);

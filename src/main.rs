@@ -11,8 +11,8 @@ mod windows;
 use config::{Action, Config, MODS};
 use ffi::*;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSWorkspace, NSWorkspaceOpenConfiguration};
-use objc2_foundation::{NSDictionary, NSNumber, NSString, NSTimer, NSURL};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSRunningApplication, NSWorkspace, NSWorkspaceOpenConfiguration};
+use objc2_foundation::{NSDictionary, NSError, NSNumber, NSString, NSTimer, NSURL};
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::path::Path;
@@ -123,8 +123,8 @@ pub fn open_app(i: usize, toggle: bool) {
     };
     let ws = NSWorkspace::sharedWorkspace();
     let Some(path) = path else {
-        // Not found at startup; let macOS look for it.
-        let _ = std::process::Command::new("/usr/bin/open").args(["-a", &name]).spawn();
+        // Not found in the usual folders; ask macOS to find it by name.
+        open_by_name(name);
         return;
     };
     if toggle
@@ -136,7 +136,25 @@ pub fn open_app(i: usize, toggle: bool) {
         return;
     }
     let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
-    ws.openApplicationAtURL_configuration_completionHandler(&url, &NSWorkspaceOpenConfiguration::configuration(), None);
+    let done = block2::RcBlock::new(move |_: *mut NSRunningApplication, err: *mut NSError| {
+        if let Some(err) = unsafe { err.as_ref() } {
+            eprintln!("nocast: could not open {name}: {}", err.localizedDescription());
+            open_by_name(name.clone());
+        }
+    });
+    ws.openApplicationAtURL_configuration_completionHandler(&url, &NSWorkspaceOpenConfiguration::configuration(), Some(&done));
+}
+
+fn open_by_name(name: String) {
+    std::thread::spawn(move || {
+        match std::process::Command::new("/usr/bin/open").args(["-a", &name]).output() {
+            Ok(out) if !out.status.success() => {
+                eprintln!("nocast: open -a {name}: {}", String::from_utf8_lossy(&out.stderr).trim())
+            }
+            Err(e) => eprintln!("nocast: open -a {name}: {e}"),
+            _ => {}
+        }
+    });
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
