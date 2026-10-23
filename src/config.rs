@@ -1,25 +1,25 @@
 // Config file: ~/.config/nocast.conf. One setting per line, `#` starts a comment.
 //
 //   launcher  cmd+space
-//   app  saf  opt+j  Safari          (keyword, optional hotkey, app name or path)
-//   full  opt+up                     (also: left, right, next)
+//   Safari    opt+j          (an app, with an optional hotkey)
+//   Logic Pro                (an app you only search for)
+//   full      opt+up         (also: left, right, next)
 
 use std::path::PathBuf;
 
 pub const DEFAULT: &str = "\
 # nocast config. Saved changes apply right away.
+# Apps: the app name, optionally followed by a hotkey.
 # Modifiers: cmd, opt, ctrl, shift. Keys: a-z, 0-9, space, up, down, left, right,
 # return, tab, escape, f1-f12, and - = [ ] ; ' , . / \\ `
 
-# launcher
 launcher   cmd+space
 
-# apps: keyword, optional direct hotkey, app name
-app  saf        opt+j   Safari
-app  notes      opt+k   Notes
-app  reminders  opt+l   Reminders
+Safari      opt+j
+Notes       opt+k
+Reminders   opt+l
+Finder
 
-# windows
 full    opt+up
 left    opt+left
 right   opt+right
@@ -54,10 +54,8 @@ pub enum Action {
 }
 
 pub struct App {
-    pub keyword: String,
     pub name: String,
     pub hotkey: Option<Hotkey>,
-    pub hotkey_label: String,
     pub path: Option<PathBuf>,
 }
 
@@ -87,60 +85,47 @@ impl Config {
             if line.is_empty() {
                 continue;
             }
-            let (cmd, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
-            let rest = rest.trim();
-            let bad = |what: &str| eprintln!("nocast: line {}: {what}: {raw}", n + 1);
-            match cmd.to_lowercase().as_str() {
-                "launcher" => match parse_hotkey(rest) {
-                    Some(h) => cfg.launcher = Some(h),
-                    None => bad("bad hotkey"),
-                },
-                "full" | "left" | "right" | "next" => {
-                    let w = match cmd.to_lowercase().as_str() {
-                        "full" => Win::Full,
-                        "left" => Win::Left,
-                        "right" => Win::Right,
-                        _ => Win::Next,
-                    };
-                    match parse_hotkey(rest) {
-                        Some(h) => cfg.win.push((h, w)),
-                        None => bad("bad hotkey"),
-                    }
+            // Settings: a reserved word followed by a hotkey.
+            let (first, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+            let setting = match first.to_lowercase().as_str() {
+                "launcher" => Some(None),
+                "full" => Some(Some(Win::Full)),
+                "left" => Some(Some(Win::Left)),
+                "right" => Some(Some(Win::Right)),
+                "next" => Some(Some(Win::Next)),
+                _ => None,
+            };
+            if let (Some(what), Some(h)) = (setting, parse_hotkey(rest)) {
+                match what {
+                    None => cfg.launcher = Some(h),
+                    Some(w) => cfg.win.push((h, w)),
                 }
-                "app" => {
-                    let mut parts = rest.split_whitespace();
-                    let Some(keyword) = parts.next() else { bad("missing keyword"); continue };
-                    let mut words: Vec<&str> = parts.collect();
-                    let mut hotkey = None;
-                    let mut hotkey_label = String::new();
-                    if words.first().is_some_and(|w| w.contains('+')) {
-                        let w = words.remove(0);
-                        hotkey = parse_hotkey(w);
-                        match hotkey {
-                            Some(h) => hotkey_label = label(h, w),
-                            None => bad("bad hotkey"),
-                        }
-                    }
-                    let name = words.join(" ");
-                    if name.is_empty() {
-                        bad("missing app name");
-                        continue;
-                    }
-                    let path = find_app(&name);
-                    if path.is_none() {
-                        eprintln!("nocast: app not found: {name}");
-                    }
-                    let display = name.rsplit('/').next().unwrap_or(&name).trim_end_matches(".app");
-                    cfg.apps.push(App {
-                        keyword: keyword.to_lowercase(),
-                        name: display.to_string(),
-                        hotkey,
-                        hotkey_label,
-                        path,
-                    });
-                }
-                _ => bad("unknown setting"),
+                continue;
             }
+
+            // Anything else is an app: its name, plus an optional hotkey (a word with '+').
+            let mut words: Vec<&str> = line.split_whitespace().collect();
+            if words.len() > 2 && words[0] == "app" {
+                words.drain(..2); // old format: "app keyword [hotkey] Name"
+            }
+            let mut hotkey = None;
+            if let Some(i) = words.iter().position(|w| w.contains('+')) {
+                hotkey = parse_hotkey(words[i]);
+                if hotkey.is_none() {
+                    eprintln!("nocast: line {}: bad hotkey: {raw}", n + 1);
+                }
+                words.remove(i);
+            }
+            let name = words.join(" ");
+            if name.is_empty() {
+                continue;
+            }
+            let path = find_app(&name);
+            if path.is_none() {
+                eprintln!("nocast: app not found: {name}");
+            }
+            let display = name.rsplit('/').next().unwrap_or(&name).trim_end_matches(".app");
+            cfg.apps.push(App { name: display.to_string(), hotkey, path });
         }
         cfg
     }
@@ -166,24 +151,6 @@ pub fn parse_hotkey(s: &str) -> Option<Hotkey> {
         return None;
     }
     Some(Hotkey { key: key?, mods })
-}
-
-fn label(h: Hotkey, text: &str) -> String {
-    let mut s = String::new();
-    if h.mods & CTRL != 0 { s.push('⌃'); }
-    if h.mods & OPT != 0 { s.push('⌥'); }
-    if h.mods & SHIFT != 0 { s.push('⇧'); }
-    if h.mods & CMD != 0 { s.push('⌘'); }
-    let key = text.rsplit('+').next().unwrap_or("").trim();
-    s.push_str(&match key.to_lowercase().as_str() {
-        "up" => "↑".into(),
-        "down" => "↓".into(),
-        "left" => "←".into(),
-        "right" => "→".into(),
-        "space" => "Space".into(),
-        k => k.to_uppercase(),
-    });
-    s
 }
 
 /// macOS virtual key codes (US layout key positions).
@@ -253,10 +220,9 @@ mod tests {
     fn default_config() {
         let c = Config::parse(DEFAULT);
         assert_eq!(c.launcher, Some(Hotkey { key: 49, mods: CMD }));
-        assert_eq!(c.apps.len(), 3);
-        assert_eq!(c.apps[2].keyword, "reminders");
-        assert_eq!(c.apps[2].name, "Reminders");
-        assert_eq!(c.apps[0].hotkey_label, "⌥J");
+        let names: Vec<&str> = c.apps.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["Safari", "Notes", "Reminders", "Finder"]);
+        assert_eq!(c.apps[3].hotkey, None);
         assert_eq!(c.win.len(), 4);
         assert!(matches!(c.lookup(126, OPT | CMD), Some(Action::Win(Win::Next))));
         assert!(matches!(c.lookup(38, OPT), Some(Action::App(0))));
@@ -264,9 +230,17 @@ mod tests {
     }
 
     #[test]
-    fn user_style_lines() {
-        let c = Config::parse("app reminders opt+l Reminders \nfull    opt+arrow up\nleft opt+left arrow\n");
-        assert_eq!(c.apps[0].name, "Reminders");
+    fn app_lines() {
+        let c = Config::parse("Logic Pro\nLogic Pro  opt+p\nopt+s Safari\napp saf opt+j Safari\napp notes Notes\nNext\nfull    opt+arrow up\nleft opt+left arrow\n");
+        let apps: Vec<(&str, Option<Hotkey>)> = c.apps.iter().map(|a| (a.name.as_str(), a.hotkey)).collect();
+        assert_eq!(apps, [
+            ("Logic Pro", None),
+            ("Logic Pro", Some(Hotkey { key: 35, mods: OPT })),
+            ("Safari", Some(Hotkey { key: 1, mods: OPT })),
+            ("Safari", Some(Hotkey { key: 38, mods: OPT })),
+            ("Notes", None),
+            ("Next", None),
+        ]);
         assert_eq!(c.win, vec![
             (Hotkey { key: 126, mods: OPT }, Win::Full),
             (Hotkey { key: 123, mods: OPT }, Win::Left),

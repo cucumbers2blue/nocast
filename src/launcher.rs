@@ -4,20 +4,18 @@
 use crate::config::Config;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, MainThreadOnly};
+use objc2::{AnyThread, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::*;
 use objc2_foundation::*;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::ptr::{null_mut, NonNull};
 
 const W: f64 = 560.0;
-const PAD: f64 = 10.0;
-const QUERY_H: f64 = 44.0;
-const ROW_H: f64 = 34.0;
+const H: f64 = 58.0;
+const FONT: f64 = 22.0;
 
 pub struct Launcher {
     panel: Retained<NSPanel>,
-    content: Retained<NSVisualEffectView>,
     query_label: Retained<NSTextField>,
     shown: Cell<bool>,
     state: RefCell<State>,
@@ -29,32 +27,32 @@ struct State {
     query: String,
     sel: usize,
     matches: Vec<usize>,
-    rows: Vec<Retained<NSView>>,
 }
 
 thread_local! {
     static LAUNCHER: OnceCell<Launcher> = const { OnceCell::new() };
 }
 
-/// Apps matching the query, best first: keyword, then name prefix, then anywhere.
+/// Apps matching the query, best first: name prefix, word prefix, anywhere, letters in order.
 pub fn matches(cfg: &Config, query: &str) -> Vec<usize> {
     let q = query.to_lowercase();
+    if q.is_empty() {
+        return vec![];
+    }
     let mut scored: Vec<(u8, usize)> = cfg
         .apps
         .iter()
         .enumerate()
         .filter_map(|(i, a)| {
             let name = a.name.to_lowercase();
-            let score = if q.is_empty() || a.keyword == q {
+            let score = if name.starts_with(&q) {
                 0
-            } else if a.keyword.starts_with(&q) {
+            } else if name.split(' ').any(|w| w.starts_with(&q)) {
                 1
-            } else if name.starts_with(&q) {
+            } else if name.contains(&q) {
                 2
-            } else if name.contains(&q) || a.keyword.contains(&q) {
-                3
             } else if is_subsequence(&q, &name) {
-                4
+                3
             } else {
                 return None;
             };
@@ -63,6 +61,16 @@ pub fn matches(cfg: &Config, query: &str) -> Vec<usize> {
         .collect();
     scored.sort();
     scored.into_iter().map(|(_, i)| i).collect()
+}
+
+/// What the field shows: the typed text, then the rest of the best match in grey.
+/// "lo" + Logic Pro -> ("lo", "gic Pro"); "pro" + Logic Pro -> ("pro", "  —  Logic Pro").
+pub fn completion(query: &str, name: &str) -> String {
+    if name.to_lowercase().starts_with(&query.to_lowercase()) {
+        name.chars().skip(query.chars().count()).collect()
+    } else {
+        format!("  —  {name}")
+    }
 }
 
 fn is_subsequence(needle: &str, hay: &str) -> bool {
@@ -74,7 +82,7 @@ pub fn init(mtm: MainThreadMarker) {
     let style = NSWindowStyleMask::Titled
         | NSWindowStyleMask::FullSizeContentView
         | NSWindowStyleMask::NonactivatingPanel;
-    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(W, 100.0));
+    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(W, H));
     let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
         NSPanel::alloc(mtm),
         rect,
@@ -108,13 +116,12 @@ pub fn init(mtm: MainThreadMarker) {
     panel.setContentView(Some(&content));
 
     let query_label = NSTextField::labelWithString(&NSString::new(), mtm);
-    query_label.setFont(Some(&NSFont::systemFontOfSize_weight(22.0, unsafe { NSFontWeightLight })));
-    query_label.setLineBreakMode(NSLineBreakMode::ByTruncatingHead);
+    query_label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    query_label.setFrame(NSRect::new(NSPoint::new(20.0, (H - 28.0) / 2.0), NSSize::new(W - 40.0, 28.0)));
     content.addSubview(&query_label);
 
     let launcher = Launcher {
         panel,
-        content,
         query_label,
         shown: Cell::new(false),
         state: RefCell::new(State::default()),
@@ -182,7 +189,7 @@ impl Launcher {
             let f = screen.frame();
             let top = f.origin.y + f.size.height * 0.72;
             let x = f.origin.x + ((f.size.width - W) / 2.0).round();
-            self.panel.setFrame_display(NSRect::new(NSPoint::new(x, top - 100.0), NSSize::new(W, 100.0)), false);
+            self.panel.setFrame_display(NSRect::new(NSPoint::new(x, top - H), NSSize::new(W, H)), false);
         }
         self.render();
         self.shown.set(true);
@@ -204,8 +211,8 @@ impl Launcher {
         match ev.keyCode() {
             53 => self.hide(),                       // escape
             36 | 76 => self.launch_selected(),       // return, enter
-            126 => self.move_sel(-1),                // up
-            125 | 48 => self.move_sel(1),            // down, tab
+            126 => self.move_sel(-1),                // up: previous match
+            125 | 48 => self.move_sel(1),            // down, tab: next match
             51 => {                                  // delete
                 let mut s = self.state.borrow_mut();
                 if flags.contains(NSEventModifierFlags::Command) { s.query.clear() } else { s.query.pop(); }
@@ -253,77 +260,36 @@ impl Launcher {
     }
 
     fn render(&self) {
-        let mtm = self.panel.mtm();
-        let (query, sel, rows) = {
+        let (query, name) = {
             let mut s = self.state.borrow_mut();
-            let rows: Vec<(String, String)> = crate::with_config(|c| {
+            let found = crate::with_config(|c| {
                 s.matches = matches(c, &s.query);
-                s.matches
-                    .iter()
-                    .map(|&i| {
-                        let a = &c.apps[i];
-                        (a.name.clone(), format!("{}   {}", a.keyword, a.hotkey_label).trim().to_string())
-                    })
-                    .collect()
+                if s.sel >= s.matches.len() {
+                    s.sel = 0;
+                }
+                s.matches.get(s.sel).map(|&i| c.apps[i].name.clone())
             });
-            if s.sel >= rows.len() {
-                s.sel = 0;
-            }
-            for v in s.rows.drain(..) {
-                v.removeFromSuperview();
-            }
-            (s.query.clone(), s.sel, rows)
+            (s.query.clone(), found)
         };
-
-        // Resize, keeping the top edge in place.
-        let h = PAD + QUERY_H + if rows.is_empty() { PAD } else { PAD + rows.len() as f64 * ROW_H + PAD };
-        let old = self.panel.frame();
-        let top = old.origin.y + old.size.height;
-        self.panel.setFrame_display(NSRect::new(NSPoint::new(old.origin.x, top - h), NSSize::new(W, h)), true);
-
-        let q = &self.query_label;
+        let font = NSFont::systemFontOfSize_weight(FONT, unsafe { NSFontWeightLight });
+        let text = NSMutableAttributedString::new();
         if query.is_empty() {
-            q.setStringValue(&NSString::from_str("Search apps"));
-            q.setTextColor(Some(&NSColor::tertiaryLabelColor()));
+            text.appendAttributedString(&styled("Search apps", &NSColor::tertiaryLabelColor(), &font));
         } else {
-            q.setStringValue(&NSString::from_str(&query));
-            q.setTextColor(Some(&NSColor::labelColor()));
-        }
-        q.setFrame(NSRect::new(NSPoint::new(18.0, h - PAD - (QUERY_H + 28.0) / 2.0), NSSize::new(W - 36.0, 28.0)));
-
-        let mut views: Vec<Retained<NSView>> = vec![];
-        for (i, (name, hint)) in rows.iter().enumerate() {
-            let y = h - (PAD + QUERY_H + PAD) - (i as f64 + 1.0) * ROW_H;
-            let selected = i == sel;
-            if selected {
-                let bg = NSBox::initWithFrame(NSBox::alloc(mtm), NSRect::new(NSPoint::new(PAD, y), NSSize::new(W - 2.0 * PAD, ROW_H)));
-                bg.setBoxType(NSBoxType::Custom);
-                bg.setTitlePosition(NSTitlePosition::NoTitle);
-                bg.setBorderWidth(0.0);
-                bg.setCornerRadius(7.0);
-                bg.setFillColor(&NSColor::selectedContentBackgroundColor());
-                self.content.addSubview(&bg);
-                views.push(Retained::into_super(bg));
+            text.appendAttributedString(&styled(&query, &NSColor::labelColor(), &font));
+            if let Some(name) = name {
+                text.appendAttributedString(&styled(&completion(&query, &name), &NSColor::tertiaryLabelColor(), &font));
             }
-            let color = if selected { NSColor::alternateSelectedControlTextColor() } else { NSColor::labelColor() };
-            let label = NSTextField::labelWithString(&NSString::from_str(name), mtm);
-            label.setFont(Some(&NSFont::systemFontOfSize(15.0)));
-            label.setTextColor(Some(&color));
-            label.setFrame(NSRect::new(NSPoint::new(20.0, y + (ROW_H - 19.0) / 2.0), NSSize::new(W - 180.0, 19.0)));
-            self.content.addSubview(&label);
-            views.push(Retained::into_super(Retained::into_super(label)));
-
-            let hint_color = if selected { NSColor::alternateSelectedControlTextColor() } else { NSColor::secondaryLabelColor() };
-            let hint = NSTextField::labelWithString(&NSString::from_str(hint), mtm);
-            hint.setFont(Some(&NSFont::systemFontOfSize(12.0)));
-            hint.setTextColor(Some(&hint_color));
-            hint.setAlignment(NSTextAlignment::Right);
-            hint.setFrame(NSRect::new(NSPoint::new(W - 180.0, y + (ROW_H - 16.0) / 2.0), NSSize::new(160.0, 16.0)));
-            self.content.addSubview(&hint);
-            views.push(Retained::into_super(Retained::into_super(hint)));
         }
-        self.state.borrow_mut().rows = views;
+        self.query_label.setAttributedStringValue(&text);
     }
+}
+
+fn styled(s: &str, color: &NSColor, font: &NSFont) -> Retained<NSAttributedString> {
+    let keys: [&NSAttributedStringKey; 2] = unsafe { [NSForegroundColorAttributeName, NSFontAttributeName] };
+    let values: [&AnyObject; 2] = [color.as_ref(), font.as_ref()];
+    let attrs = NSDictionary::from_slices(&keys, &values);
+    unsafe { NSAttributedString::initWithString_attributes(NSAttributedString::alloc(), &NSString::from_str(s), Some(&attrs)) }
 }
 
 #[cfg(test)]
@@ -332,13 +298,21 @@ mod tests {
 
     #[test]
     fn ranking() {
-        let c = Config::parse("app saf Safari\napp notes Notes\napp reminders Reminders\napp term Terminal\n");
+        let c = Config::parse("Safari\nNotes\nReminders\nLogic Pro\nTerminal\n");
         let names = |q: &str| matches(&c, q).iter().map(|&i| c.apps[i].name.clone()).collect::<Vec<_>>();
-        assert_eq!(names(""), ["Safari", "Notes", "Reminders", "Terminal"]);
+        assert!(names("").is_empty());
         assert_eq!(names("saf"), ["Safari"]);
         assert_eq!(names("re"), ["Reminders"]);
+        assert_eq!(names("pro"), ["Logic Pro"]);
         assert_eq!(names("t"), ["Terminal", "Notes"]);
         assert_eq!(names("rmd"), ["Reminders"]);
         assert!(names("xyz").is_empty());
+    }
+
+    #[test]
+    fn inline_completion() {
+        assert_eq!(completion("lo", "Logic Pro"), "gic Pro");
+        assert_eq!(completion("LO", "Logic Pro"), "gic Pro");
+        assert_eq!(completion("pro", "Logic Pro"), "  —  Logic Pro");
     }
 }

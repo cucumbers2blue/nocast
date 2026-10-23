@@ -24,28 +24,27 @@ curl -fsSL https://raw.githubusercontent.com/cucumbers2blue/nocast/main/install.
 `~/.config/nocast.conf` is created on first run. Changes apply as soon as you save.
 
 ```
-# launcher
 launcher   cmd+space
 
-# apps: keyword, optional direct hotkey, app name (or full path to a .app)
-app  saf        opt+j   Safari
-app  notes      opt+k   Notes
-app  reminders  opt+l   Reminders
+Safari      opt+j
+Notes       opt+k
+Reminders   opt+l
+Logic Pro
 
-# windows
 full    opt+up
 left    opt+left
 right   opt+right
 next    opt+cmd+up
 ```
 
+- Apps: the app name (or a full path to a .app), optionally followed by a hotkey. Without a hotkey, the app is only found by searching.
 - Modifiers: `cmd`, `opt`, `ctrl`, `shift`. Keys: `a`–`z`, `0`–`9`, `space`, `up`, `down`, `left`, `right`, `return`, `tab`, `escape`, `f1`–`f12`, punctuation.
-- A direct app hotkey opens the app, or hides it if it's already in front.
-- Launcher: type to filter, up/down or tab to pick, return to open, escape to close.
+- An app hotkey opens the app, or hides it if it's already in front.
+- Launcher: type, and the best match completes in grey. Return opens it, up/down or tab cycles matches, escape closes.
 - `full` fills the screen except the menu bar and Dock. `next` moves the window to the next display, keeping its relative size and position.
 
 Logs: `~/Library/Logs/nocast.log`.
 
 ## How it works
 
-About 700 lines of Rust in `src/`. A keyboard event tap (on its own thread) catches the configured hotkeys and swallows them; everything else passes through untouched. Window moves use the Accessibility API. GitHub Actions builds and signs (ad-hoc) on each push to `main` and publishes a release.
+About 800 lines of Rust in `src/`. A keyboard event tap (on its own thread) catches the configured hotkeys and swallows them; everything else passes through untouched. Window moves use the Accessibility API. GitHub Actions builds and signs (ad-hoc) on each push to `main` and publishes a release.
