@@ -75,3 +75,17 @@ unsafe extern "C" {
     pub static _dispatch_main_q: u8;
     pub fn dispatch_async_f(queue: *mut c_void, ctx: *mut c_void, work: extern "C" fn(*mut c_void));
 }
+
+// Apple Events permission (Automation) check.
+#[repr(C)]
+pub struct AEDesc {
+    pub descriptor_type: u32,
+    pub data_handle: *mut c_void,
+}
+
+#[link(name = "CoreServices", kind = "framework")]
+unsafe extern "C" {
+    pub fn AECreateDesc(kind: u32, data: *const c_void, size: isize, out: *mut AEDesc) -> i16;
+    pub fn AEDisposeDesc(desc: *mut AEDesc) -> i16;
+    pub fn AEDeterminePermissionToAutomateTarget(target: *const AEDesc, class: u32, id: u32, ask: bool) -> i32;
+}

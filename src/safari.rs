@@ -5,7 +5,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, AnyThread};
 use objc2_app_kit::{NSRunningApplication, NSWorkspace};
-use objc2_foundation::{NSAppleEventDescriptor, NSAppleScript, NSDictionary, NSString};
+use objc2_foundation::{NSAppleEventDescriptor, NSAppleScript, NSDictionary, NSNumber, NSString};
 
 const SAFARI: &str = "com.apple.Safari";
 
@@ -20,6 +20,10 @@ pub fn open(url: &str) {
         .frontmostApplication()
         .and_then(|a| a.bundleIdentifier())
         .is_some_and(|id| id.to_string() == SAFARI);
+
+    if !allowed() {
+        log!("nocast isn't allowed to control Safari. Turn it on in System Settings > Privacy & Security > Automation > nocast > Safari");
+    }
 
     // If talking to Safari fails for any reason, still open the site.
     let fallback = || {
@@ -117,15 +121,52 @@ fn run(source: &str) -> Option<String> {
     let result: Option<Retained<NSAppleEventDescriptor>> =
         unsafe { msg_send![&*script, executeAndReturnError: Some(&mut error)] };
     if let Some(e) = error {
-        let get = |k: &str| e.objectForKey(&NSString::from_str(k)).map(|v| format!("{v:?}")).unwrap_or_default();
+        let get = |k: &str| {
+            let Some(v) = e.objectForKey(&NSString::from_str(k)) else { return String::new() };
+            if let Some(s) = v.downcast_ref::<NSString>() {
+                s.to_string()
+            } else if let Some(n) = v.downcast_ref::<NSNumber>() {
+                n.integerValue().to_string()
+            } else {
+                String::new()
+            }
+        };
+        let which = source.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
         log!(
-            "Safari script failed ({}): {}",
+            "Safari script failed: error {}: {} (script starting \"{which}\")",
             get("NSAppleScriptErrorNumber"),
-            get("NSAppleScriptErrorMessage")
+            get("NSAppleScriptErrorMessage"),
         );
         return None;
     }
     Some(result.and_then(|r| r.stringValue()).map(|s| s.to_string()).unwrap_or_default())
+}
+
+/// Asks macOS whether nocast may send Apple Events to Safari, prompting if needed.
+fn allowed() -> bool {
+    use crate::ffi::{AEDesc, AECreateDesc, AEDeterminePermissionToAutomateTarget, AEDisposeDesc};
+    const TYPE_BUNDLE_ID: u32 = u32::from_be_bytes(*b"bund");
+    const WILDCARD: u32 = u32::from_be_bytes(*b"****");
+    let mut target = AEDesc { descriptor_type: 0, data_handle: std::ptr::null_mut() };
+    let status = unsafe {
+        if AECreateDesc(TYPE_BUNDLE_ID, SAFARI.as_ptr().cast(), SAFARI.len() as isize, &mut target) != 0 {
+            return true; // can't tell; just try
+        }
+        let s = AEDeterminePermissionToAutomateTarget(&target, WILDCARD, WILDCARD, true);
+        AEDisposeDesc(&mut target);
+        s
+    };
+    debug!(
+        "Safari: permission check: {status} ({})",
+        match status {
+            0 => "allowed",
+            -1743 => "denied",
+            -1744 => "would need to ask",
+            -600 => "Safari not running",
+            _ => "unknown",
+        }
+    );
+    status != -1743
 }
 
 #[derive(Debug, Default)]

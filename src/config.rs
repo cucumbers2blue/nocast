@@ -122,7 +122,10 @@ impl Config {
             if words.len() > 2 && words[0] == "app" {
                 words.drain(..2); // old format: "app keyword [hotkey] Name"
             }
-            let url = words.iter().position(|w| w.contains("://")).map(|i| words.remove(i).to_string());
+            let url = words.iter().position(|w| w.contains("://") || looks_like_domain(w)).map(|i| {
+                let w = words.remove(i);
+                if w.contains("://") { w.to_string() } else { format!("https://{w}") }
+            });
             let mut hotkey = None;
             if let Some(i) = words.iter().position(|w| w.contains('+')) {
                 hotkey = parse_hotkey(words[i]);
@@ -154,6 +157,18 @@ impl Config {
         }
         cfg
     }
+}
+
+/// "youtube.com" or "github.com/me": lowercase, dotted, ending in a word like "com".
+/// (App names like "Logic Pro" or "Pixelmator Pro 3.5" don't qualify.)
+fn looks_like_domain(w: &str) -> bool {
+    let host = w.split('/').next().unwrap_or("");
+    let labels: Vec<&str> = host.split('.').collect();
+    let tld = labels.last().copied().unwrap_or("");
+    labels.len() >= 2
+        && labels.iter().all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+        && tld.len() >= 2
+        && tld.chars().all(|c| c.is_ascii_lowercase())
 }
 
 /// Accepts "opt+up", "opt + arrow up", "option+left arrow", "cmd+opt+up", ...
@@ -322,6 +337,18 @@ mod tests {
         );
         assert_eq!(find_app("Nope"), None);
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn bare_domains() {
+        let c = Config::parse("youtube youtube.com\nGitHub github.com/me opt+g\nPixelmator Pro 3.5\nNode.js\n");
+        let v: Vec<(&str, Option<&str>)> = c.apps.iter().map(|a| (a.name.as_str(), a.url.as_deref())).collect();
+        assert_eq!(v, [
+            ("youtube", Some("https://youtube.com")),
+            ("GitHub", Some("https://github.com/me")),
+            ("Pixelmator Pro 3.5", None),
+            ("Node.js", None),
+        ]);
     }
 
     #[test]
