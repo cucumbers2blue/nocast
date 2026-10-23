@@ -28,6 +28,9 @@ full    opt+up
 left    opt+left
 right   opt+right
 next    opt+cmd+up
+
+# Log every step. Watch it live with: open -a Console ~/Library/Logs/nocast.log
+# debug
 ";
 
 pub const CMD: u64 = 0x100000;
@@ -70,6 +73,7 @@ pub struct Config {
     pub launcher: Option<Hotkey>,
     pub apps: Vec<App>,
     pub win: Vec<(Hotkey, Win)>,
+    pub debug: bool,
 }
 
 impl Config {
@@ -93,6 +97,10 @@ impl Config {
             }
             // Settings: a reserved word followed by a hotkey.
             let (first, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+            if line.eq_ignore_ascii_case("debug") {
+                cfg.debug = true;
+                continue;
+            }
             let setting = match first.to_lowercase().as_str() {
                 "launcher" => Some(None),
                 "full" => Some(Some(Win::Full)),
@@ -119,7 +127,7 @@ impl Config {
             if let Some(i) = words.iter().position(|w| w.contains('+')) {
                 hotkey = parse_hotkey(words[i]);
                 if hotkey.is_none() {
-                    eprintln!("nocast: line {}: bad hotkey: {raw}", n + 1);
+                    log!("config line {}: bad hotkey: {raw}", n + 1);
                 }
                 words.remove(i);
             }
@@ -139,7 +147,7 @@ impl Config {
             }
             let path = find_app(&name);
             if path.is_none() {
-                eprintln!("nocast: app not found: {name}");
+                log!("app not found: {name}");
             }
             let display = name.rsplit('/').next().unwrap_or(&name).trim_end_matches(".app");
             cfg.apps.push(App { name: display.to_string(), hotkey, path, url: None });
@@ -272,6 +280,8 @@ mod tests {
         assert_eq!(names, ["Safari", "Notes", "Reminders", "Finder"]);
         assert_eq!(c.apps[3].hotkey, None);
         assert_eq!(c.win.len(), 4);
+        assert!(!c.debug);
+        assert!(Config::parse("debug\n").debug);
         assert!(matches!(c.lookup(126, OPT | CMD), Some(Action::Win(Win::Next))));
         assert!(matches!(c.lookup(38, OPT), Some(Action::App(0))));
         assert!(c.lookup(38, CMD).is_none());

@@ -254,6 +254,7 @@ impl Launcher {
             s.matches.get(s.sel).copied()
         };
         self.hide();
+        debug!("launcher: return pressed, selection {app:?}");
         if let Some(i) = app {
             crate::open_app(i, false);
         }

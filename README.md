@@ -47,7 +47,7 @@ next    opt+cmd+up
 - Launcher: type, and the best match completes in grey. Return opens it, up/down or tab cycles matches, escape closes.
 - `full` fills the screen except the menu bar and Dock. `next` moves the window to the next display, keeping its relative size and position.
 
-Logs: `~/Library/Logs/nocast.log`.
+Logs: `~/Library/Logs/nocast.log` (errors only). Add a line `debug` to the config to log every step, and watch it live with `open -a Console ~/Library/Logs/nocast.log`.
 
 ## How it works
 

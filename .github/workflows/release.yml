@@ -22,18 +22,19 @@ jobs:
         run: cargo test
 
       - name: Build
-        run: cargo build --release
+        run: |
+          VERSION="0.1.${{ github.run_number }}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          NOCAST_VERSION="$VERSION" cargo build --release
 
       - name: Bundle
         run: |
-          VERSION="0.1.${{ github.run_number }}"
           mkdir -p nocast.app/Contents/MacOS
           cp target/release/nocast nocast.app/Contents/MacOS/
           sed "s/__VERSION__/$VERSION/g" bundle/Info.plist > nocast.app/Contents/Info.plist
           codesign --force --sign - --identifier com.github.cucumbers2blue.nocast nocast.app
           ditto -c -k --keepParent nocast.app nocast.zip
           ls -l target/release/nocast nocast.zip
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Release
         env:

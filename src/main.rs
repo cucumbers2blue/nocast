@@ -3,6 +3,8 @@
 // A keyboard event tap on its own thread catches the configured hotkeys and
 // hands the matching action to the main thread, which owns all UI work.
 
+#[macro_use]
+mod log;
 mod config;
 mod ffi;
 mod launcher;
@@ -21,7 +23,7 @@ use std::ptr::{null, null_mut, NonNull};
 use std::sync::{Mutex, RwLock};
 use std::time::SystemTime;
 
-static CONFIG: RwLock<Config> = RwLock::new(Config { launcher: None, apps: Vec::new(), win: Vec::new() });
+static CONFIG: RwLock<Config> = RwLock::new(Config { launcher: None, apps: Vec::new(), win: Vec::new(), debug: false });
 static MTIME: Mutex<Option<SystemTime>> = Mutex::new(None);
 
 pub fn with_config<R>(f: impl FnOnce(&Config) -> R) -> R {
@@ -42,7 +44,14 @@ fn reload_config() {
     }
     *last = mtime;
     let text = std::fs::read_to_string(&path).unwrap_or_default();
-    *CONFIG.write().unwrap_or_else(|e| e.into_inner()) = Config::parse(&text);
+    let cfg = Config::parse(&text);
+    log::DEBUG.store(cfg.debug, std::sync::atomic::Ordering::Relaxed);
+    debug!("config loaded: launcher {:?}, {} window hotkeys", cfg.launcher, cfg.win.len());
+    for a in &cfg.apps {
+        let target = a.url.clone().or_else(|| a.path.as_ref().map(|p| p.display().to_string()));
+        debug!("  {:<20} {:<50} {:?}", a.name, target.unwrap_or("NOT FOUND".into()), a.hotkey);
+    }
+    *CONFIG.write().unwrap_or_else(|e| e.into_inner()) = cfg;
 }
 
 // ---- keyboard tap (runs on its own thread) ----
@@ -68,6 +77,7 @@ extern "C" fn on_event(_: *mut c_void, kind: u32, event: CGEventRef, _: *mut c_v
     let Some(action) = with_config(|c| c.lookup(key, mods)) else { return event };
     let repeat = unsafe { CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) } != 0;
     if !repeat {
+        debug!("hotkey: key {key}, modifiers {mods:#x} -> {action:?}");
         post_to_main(action);
     }
     null_mut() // swallow the hotkey
@@ -84,10 +94,11 @@ fn start_tap() {
             null_mut(),
         );
         if tap.is_null() {
-            eprintln!("nocast: could not listen for hotkeys (Accessibility permission?)");
+            log!("could not listen for hotkeys (Accessibility permission?)");
             std::process::exit(1); // launchd restarts us
         }
         TAP.with(|t| t.set(tap));
+        debug!("listening for hotkeys");
         let source = CFMachPortCreateRunLoopSource(null(), tap, 0);
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
         CGEventTapEnable(tap, true);
@@ -124,6 +135,7 @@ pub fn open_app(i: usize, toggle: bool) {
     else {
         return;
     };
+    debug!("open {name}: {}", url.clone().or_else(|| path.as_ref().map(|p| p.display().to_string())).unwrap_or("not found, trying open -a".into()));
     if let Some(url) = url {
         safari::open(&url);
         return;
@@ -139,13 +151,14 @@ pub fn open_app(i: usize, toggle: bool) {
         && let Some(front_path) = front.bundleURL().and_then(|u| u.path())
         && same_file(Path::new(&front_path.to_string()), &path)
     {
+        debug!("{name} is in front: hiding it");
         front.hide();
         return;
     }
     let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
     let done = block2::RcBlock::new(move |_: *mut NSRunningApplication, err: *mut NSError| {
         if let Some(err) = unsafe { err.as_ref() } {
-            eprintln!("nocast: could not open {name}: {}", err.localizedDescription());
+            log!("could not open {name}: {}", err.localizedDescription());
             open_by_name(name.clone());
         }
     });
@@ -156,9 +169,9 @@ fn open_by_name(name: String) {
     std::thread::spawn(move || {
         match std::process::Command::new("/usr/bin/open").args(["-a", &name]).output() {
             Ok(out) if !out.status.success() => {
-                eprintln!("nocast: open -a {name}: {}", String::from_utf8_lossy(&out.stderr).trim())
+                log!("open -a {name}: {}", String::from_utf8_lossy(&out.stderr).trim())
             }
-            Err(e) => eprintln!("nocast: open -a {name}: {e}"),
+            Err(e) => log!("open -a {name}: {e}"),
             _ => {}
         }
     });
@@ -173,6 +186,11 @@ fn same_file(a: &Path, b: &Path) -> bool {
 fn main() {
     let mtm = MainThreadMarker::new().expect("main thread");
     reload_config();
+    log!(
+        "nocast {} started (Accessibility {})",
+        option_env!("NOCAST_VERSION").unwrap_or("dev"),
+        if unsafe { AXIsProcessTrusted() } { "on" } else { "off: waiting for permission" }
+    );
 
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory); // no Dock icon

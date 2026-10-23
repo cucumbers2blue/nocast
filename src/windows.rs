@@ -124,9 +124,21 @@ pub fn run(action: Win, mtm: MainThreadMarker) {
     let Some(front) = NSWorkspace::sharedWorkspace().frontmostApplication() else { return };
     let app = Cf(unsafe { AXUIElementCreateApplication(front.processIdentifier()) });
     unsafe { AXUIElementSetMessagingTimeout(app.0, 1.0) };
-    let Some(win) = copy_attr(app.0, "AXFocusedWindow") else { return };
-    let Some(frame) = get_frame(win.0) else { return };
-    let Some(to) = target(action, frame, &screens(mtm)) else { return };
+    let name = front.localizedName().map(|n| n.to_string()).unwrap_or_default();
+    let Some(win) = copy_attr(app.0, "AXFocusedWindow") else {
+        debug!("window {action:?}: {name} has no focused window");
+        return;
+    };
+    let Some(frame) = get_frame(win.0) else {
+        debug!("window {action:?}: couldn't read {name}'s window frame");
+        return;
+    };
+    let screens = screens(mtm);
+    let Some(to) = target(action, frame, &screens) else {
+        debug!("window {action:?}: nothing to do ({} screen(s))", screens.len());
+        return;
+    };
+    debug!("window {action:?}: {name} {frame:?} -> {to:?}");
 
     // Some apps animate Accessibility-driven resizes when this is on; turn it off meanwhile.
     let enhanced = copy_attr(app.0, "AXEnhancedUserInterface").is_some_and(|v| v.0 == unsafe { kCFBooleanTrue });

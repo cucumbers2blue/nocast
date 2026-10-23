@@ -11,6 +11,7 @@ const SAFARI: &str = "com.apple.Safari";
 
 pub fn open(url: &str) {
     let running = !NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(SAFARI)).is_empty();
+    debug!("Safari: {url} (Safari running: {running})");
     if !running {
         let _ = std::process::Command::new("/usr/bin/open").args(["-b", SAFARI, url]).spawn();
         return;
@@ -24,9 +25,20 @@ pub fn open(url: &str) {
     let fallback = || {
         let _ = std::process::Command::new("/usr/bin/open").args(["-b", SAFARI, url]).spawn();
     };
-    let Some(listing) = run(LIST_TABS) else { return fallback() };
+    let Some(listing) = run(LIST_TABS) else {
+        debug!("Safari: couldn't list tabs, opening the URL instead");
+        return fallback();
+    };
     let tabs = Tabs::parse(&listing);
-    let done = match tabs.pick(url, front) {
+    let picked = tabs.pick(url, front);
+    debug!(
+        "Safari: {} tabs, {} match, front tab {:?}, Safari in front: {front} -> {}",
+        tabs.tabs.len(),
+        tabs.tabs.iter().filter(|(_, _, u)| matches(u, url)).count(),
+        tabs.front,
+        picked.map_or("new tab".into(), |(w, t)| format!("window {w} tab {t}"))
+    );
+    let done = match picked {
         Some((window, tab)) => run(&format!(
                 r#"tell application "Safari"
                     with timeout of 30 seconds
@@ -55,6 +67,7 @@ pub fn open(url: &str) {
         }
     };
     if done.is_none() {
+        debug!("Safari: script failed, opening the URL instead");
         fallback();
     }
 }
@@ -93,8 +106,8 @@ fn run(source: &str) -> Option<String> {
         unsafe { msg_send![&*script, executeAndReturnError: Some(&mut error)] };
     if let Some(e) = error {
         let get = |k: &str| e.objectForKey(&NSString::from_str(k)).map(|v| format!("{v:?}")).unwrap_or_default();
-        eprintln!(
-            "nocast: Safari script failed ({}): {}",
+        log!(
+            "Safari script failed ({}): {}",
             get("NSAppleScriptErrorNumber"),
             get("NSAppleScriptErrorMessage")
         );
