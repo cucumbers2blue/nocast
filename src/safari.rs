@@ -38,21 +38,32 @@ pub fn open(url: &str) {
         tabs.front,
         picked.map_or("new tab".into(), |(w, t)| format!("window {w} tab {t}"))
     );
-    let done = match picked {
-        Some((window, tab)) => run(&format!(
+    match picked {
+        // Found: only switch tabs. Never open the URL again, which would reload it.
+        Some((window, tab)) => {
+            let r = run(&format!(
                 r#"tell application "Safari"
                     with timeout of 30 seconds
                         set w to window id {window}
-                        if miniaturized of w then set miniaturized of w to false
+                        try
+                            if miniaturized of w then set miniaturized of w to false
+                        end try
                         set current tab of w to tab {tab} of w
-                        set index of w to 1
+                        try
+                            set index of w to 1
+                        end try
                         activate
                     end timeout
-                end tell"#
-        )),
+                end tell
+                return "ok""#
+            ));
+            if r.is_none() {
+                debug!("Safari: couldn't switch to the tab");
+            }
+        }
         None => {
             let url = url.replace('\\', "\\\\").replace('"', "\\\"");
-            run(&format!(
+            let r = run(&format!(
                 r#"tell application "Safari"
                     with timeout of 30 seconds
                         try
@@ -62,13 +73,14 @@ pub fn open(url: &str) {
                         end try
                         activate
                     end timeout
-                end tell"#
-            ))
+                end tell
+                return "ok""#
+            ));
+            if r.is_none() {
+                debug!("Safari: script failed, opening the URL instead");
+                fallback();
+            }
         }
-    };
-    if done.is_none() {
-        debug!("Safari: script failed, opening the URL instead");
-        fallback();
     }
 }
 
@@ -113,7 +125,7 @@ fn run(source: &str) -> Option<String> {
         );
         return None;
     }
-    Some(result?.stringValue().map(|s| s.to_string()).unwrap_or_default())
+    Some(result.and_then(|r| r.stringValue()).map(|s| s.to_string()).unwrap_or_default())
 }
 
 #[derive(Debug, Default)]
@@ -186,6 +198,10 @@ mod tests {
         assert!(!matches("https://github.com/other", "https://github.com/cucumbers2blue"));
         assert!(!matches("", "https://github.com"));
         assert!(!matches("favorites://", "https://github.com"));
+        // A domain alone matches every page of the site.
+        assert!(matches("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s", "https://youtube.com"));
+        assert!(matches("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://www.youtube.com/"));
+        assert!(matches("https://YouTube.com/@channel", "youtube.com"));
     }
 
     #[test]
