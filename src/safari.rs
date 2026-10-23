@@ -18,13 +18,16 @@ pub fn open(url: &str) {
         .and_then(|a| a.bundleIdentifier())
         .is_some_and(|id| id.to_string() == SAFARI);
 
-    let Some(listing) = run(LIST_TABS) else { return };
+    // If talking to Safari fails for any reason, still open the site.
+    let fallback = || {
+        let _ = std::process::Command::new("/usr/bin/open").args(["-b", SAFARI, url]).spawn();
+    };
+    let Some(listing) = run(LIST_TABS) else { return fallback() };
     let tabs = Tabs::parse(&listing);
-    match tabs.pick(url, front) {
-        Some((window, tab)) => {
-            run(&format!(
+    let done = match tabs.pick(url, front) {
+        Some((window, tab)) => run(&format!(
                 r#"tell application "Safari"
-                    with timeout of 3 seconds
+                    with timeout of 30 seconds
                         set w to window id {window}
                         if miniaturized of w then set miniaturized of w to false
                         set current tab of w to tab {tab} of w
@@ -32,13 +35,12 @@ pub fn open(url: &str) {
                         activate
                     end timeout
                 end tell"#
-            ));
-        }
+        )),
         None => {
             let url = url.replace('\\', "\\\\").replace('"', "\\\"");
             run(&format!(
                 r#"tell application "Safari"
-                    with timeout of 3 seconds
+                    with timeout of 30 seconds
                         try
                             tell window 1 to set current tab to (make new tab at end of tabs with properties {{URL:"{url}"}})
                         on error
@@ -47,8 +49,11 @@ pub fn open(url: &str) {
                         activate
                     end timeout
                 end tell"#
-            ));
+            ))
         }
+    };
+    if done.is_none() {
+        fallback();
     }
 }
 
@@ -58,7 +63,7 @@ const LIST_TABS: &str = r#"
 set sep to character id 9
 set out to ""
 tell application "Safari"
-    with timeout of 3 seconds
+    with timeout of 30 seconds
         try
             set out to "front" & sep & (id of window 1) & sep & (index of current tab of window 1) & linefeed
         end try
@@ -83,7 +88,8 @@ fn run(source: &str) -> Option<String> {
     let mut error = None;
     let result = unsafe { script.executeAndReturnError(Some(&mut error)) };
     if let Some(e) = error {
-        eprintln!("nocast: Safari: {e:?}");
+        let msg = e.objectForKey(&NSString::from_str("NSAppleScriptErrorMessage")).map(|m| format!("{m:?}"));
+        eprintln!("nocast: Safari script failed: {}", msg.unwrap_or_else(|| format!("{e:?}")));
         return None;
     }
     Some(result.stringValue().map(|s| s.to_string()).unwrap_or_default())
