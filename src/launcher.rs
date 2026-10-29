@@ -17,6 +17,7 @@ const FONT: f64 = 22.0;
 pub struct Launcher {
     panel: Retained<NSPanel>,
     query_label: Retained<NSTextField>,
+    shortcut_label: Retained<NSTextField>,
     shown: Cell<bool>,
     state: RefCell<State>,
     _observers: RefCell<Vec<Retained<AnyObject>>>,
@@ -120,9 +121,16 @@ pub fn init(mtm: MainThreadMarker) {
     query_label.setFrame(NSRect::new(NSPoint::new(20.0, (H - 28.0) / 2.0), NSSize::new(W - 40.0, 28.0)));
     content.addSubview(&query_label);
 
+    let shortcut_label = NSTextField::labelWithString(&NSString::new(), mtm);
+    shortcut_label.setFont(Some(&NSFont::systemFontOfSize(17.0)));
+    shortcut_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    shortcut_label.setAlignment(NSTextAlignment::Right);
+    content.addSubview(&shortcut_label);
+
     let launcher = Launcher {
         panel,
         query_label,
+        shortcut_label,
         shown: Cell::new(false),
         state: RefCell::new(State::default()),
         _observers: RefCell::new(vec![]),
@@ -270,18 +278,33 @@ impl Launcher {
                 }
                 s.matches.get(s.sel).map(|&i| {
                     let a = &c.apps[i];
-                    (a.name.clone(), a.path.is_some() || a.url.is_some())
+                    (a.name.clone(), a.path.is_some() || a.url.is_some(), a.hotkey)
                 })
             });
             (s.query.clone(), found)
         };
+        let shortcut = name.as_ref().and_then(|(_, _, hotkey)| *hotkey)
+            .map(|hotkey| hotkey.to_string()).unwrap_or_default();
+        self.shortcut_label.setStringValue(&NSString::from_str(&shortcut));
+        self.shortcut_label.setHidden(shortcut.is_empty());
+        self.shortcut_label.sizeToFit();
+        let shortcut_size = self.shortcut_label.frame().size;
+        let shortcut_width = shortcut_size.width.ceil();
+        let query_width = if shortcut.is_empty() { W - 40.0 } else { W - 56.0 - shortcut_width };
+        self.shortcut_label.setFrame(NSRect::new(
+            NSPoint::new(W - 20.0 - shortcut_width, (H - shortcut_size.height) / 2.0),
+            NSSize::new(shortcut_width, shortcut_size.height),
+        ));
+        self.query_label.setFrame(NSRect::new(
+            NSPoint::new(20.0, (H - 28.0) / 2.0), NSSize::new(query_width, 28.0),
+        ));
         let font = NSFont::systemFontOfSize_weight(FONT, unsafe { NSFontWeightLight });
         let text = NSMutableAttributedString::new();
         if query.is_empty() {
             text.appendAttributedString(&styled("Search apps", &NSColor::tertiaryLabelColor(), &font));
         } else {
             text.appendAttributedString(&styled(&query, &NSColor::labelColor(), &font));
-            if let Some((name, found)) = name {
+            if let Some((name, found, _)) = name {
                 let mut rest = completion(&query, &name);
                 if !found {
                     rest.push_str("  (not found)");

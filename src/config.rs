@@ -45,6 +45,33 @@ pub struct Hotkey {
     pub mods: u64,
 }
 
+impl std::fmt::Display for Hotkey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (flag, symbol) in [(CTRL, "⌃"), (OPT, "⌥"), (SHIFT, "⇧"), (CMD, "⌘")] {
+            if self.mods & flag != 0 {
+                f.write_str(symbol)?;
+            }
+        }
+        let key = match self.key {
+            36 => "↩", 48 => "⇥", 49 => "Space", 51 => "⌫", 53 => "⎋",
+            123 => "←", 124 => "→", 125 => "↓", 126 => "↑",
+            122 => "F1", 120 => "F2", 99 => "F3", 118 => "F4", 96 => "F5", 97 => "F6",
+            98 => "F7", 100 => "F8", 101 => "F9", 109 => "F10", 103 => "F11", 111 => "F12",
+            _ => {
+                // Use the same US key positions as the config parser.
+                if let Some(c) = "abcdefghijklmnopqrstuvwxyz0123456789-=[];',./\\`"
+                    .chars()
+                    .find(|c| keycode(&c.to_string()) == Some(self.key))
+                {
+                    return write!(f, "{}", c.to_ascii_uppercase());
+                }
+                "?"
+            }
+        };
+        f.write_str(key)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Win {
     Full,
@@ -275,6 +302,28 @@ pub fn path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortcut_symbols() {
+        for (config, expected) in [
+            ("opt+j", "⌥J"), ("cmd+opt+g", "⌥⌘G"),
+            ("cmd+shift+ctrl+opt+7", "⌃⌥⇧⌘7"),
+            ("command+space", "⌘Space"), ("opt+up", "⌥↑"),
+            ("opt+down", "⌥↓"), ("opt+left", "⌥←"), ("opt+right", "⌥→"),
+            ("ctrl+return", "⌃↩"), ("ctrl+tab", "⌃⇥"),
+            ("cmd+delete", "⌘⌫"), ("cmd+escape", "⌘⎋"),
+        ] {
+            assert_eq!(parse_hotkey(config).unwrap().to_string(), expected);
+        }
+        for key in "abcdefghijklmnopqrstuvwxyz0123456789-=[];',./\\`".chars() {
+            let hotkey = parse_hotkey(&format!("cmd+{key}")).unwrap();
+            assert_eq!(hotkey.to_string(), format!("⌘{}", key.to_ascii_uppercase()));
+        }
+        for n in 1..=12 {
+            let hotkey = parse_hotkey(&format!("shift+f{n}")).unwrap();
+            assert_eq!(hotkey.to_string(), format!("⇧F{n}"));
+        }
+    }
 
     #[test]
     fn hotkeys() {
