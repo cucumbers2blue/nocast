@@ -4,6 +4,7 @@
 //   Safari    opt+j          (an app, with an optional hotkey)
 //   Logic Pro                (an app you only search for)
 //   full      opt+up         (also: left, right, next)
+//   browser   chrome         (websites in Chrome instead of Safari)
 
 use std::path::PathBuf;
 
@@ -22,6 +23,7 @@ Finder
 
 # websites: a name, the address, an optional hotkey.
 # If the site is already open in Safari, nocast switches to that tab.
+# For Chrome instead, add a line: browser chrome
 # Gmail   https://mail.google.com   opt+g
 
 full    opt+up
@@ -87,6 +89,14 @@ pub enum Action {
     Win(Win),
 }
 
+/// Where websites open: `browser safari` (the default) or `browser chrome`.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum Browser {
+    #[default]
+    Safari,
+    Chrome,
+}
+
 /// An app, or a website when `url` is set.
 pub struct App {
     pub name: String,
@@ -101,6 +111,7 @@ pub struct Config {
     pub apps: Vec<App>,
     pub win: Vec<(Hotkey, Win)>,
     pub debug: bool,
+    pub browser: Browser,
 }
 
 impl Config {
@@ -126,6 +137,14 @@ impl Config {
             let (first, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
             if line.eq_ignore_ascii_case("debug") {
                 cfg.debug = true;
+                continue;
+            }
+            if first.eq_ignore_ascii_case("browser") && !rest.trim().is_empty() {
+                match rest.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase().as_str() {
+                    "safari" => cfg.browser = Browser::Safari,
+                    "chrome" | "google chrome" => cfg.browser = Browser::Chrome,
+                    _ => log!("config line {}: unknown browser (use safari or chrome): {raw}", n + 1),
+                }
                 continue;
             }
             let setting = match first.to_lowercase().as_str() {
@@ -349,6 +368,17 @@ mod tests {
         assert!(matches!(c.lookup(126, OPT | CMD), Some(Action::Win(Win::Next))));
         assert!(matches!(c.lookup(38, OPT), Some(Action::App(0))));
         assert!(c.lookup(38, CMD).is_none());
+    }
+
+    #[test]
+    fn browser() {
+        assert_eq!(Config::parse(DEFAULT).browser, Browser::Safari);
+        assert_eq!(Config::parse("browser chrome\n").browser, Browser::Chrome);
+        assert_eq!(Config::parse("Browser  Google Chrome  # websites\n").browser, Browser::Chrome);
+        assert_eq!(Config::parse("browser chrome\nbrowser safari\n").browser, Browser::Safari);
+        let c = Config::parse("browser firefox\n");
+        assert_eq!(c.browser, Browser::Safari);
+        assert!(c.apps.is_empty());
     }
 
     #[test]

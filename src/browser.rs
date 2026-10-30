@@ -1,42 +1,61 @@
-// Websites: jump to the Safari tab that already has the site open, or open it.
-// Talks to Safari with AppleScript (macOS asks once for permission).
+// Websites: jump to the browser tab that already has the site open, or open it.
+// Talks to Safari, or Chrome with `browser chrome`, via AppleScript (macOS asks once for permission).
 
+use crate::config::Browser;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, AnyThread};
 use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use objc2_foundation::{NSAppleEventDescriptor, NSAppleScript, NSDictionary, NSNumber, NSString};
 
-const SAFARI: &str = "com.apple.Safari";
+impl Browser {
+    fn id(self) -> &'static str {
+        match self {
+            Browser::Safari => "com.apple.Safari",
+            Browser::Chrome => "com.google.Chrome",
+        }
+    }
+}
 
-pub fn open(url: &str) {
-    let running = !NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(SAFARI)).is_empty();
-    debug!("Safari: {url} (Safari running: {running})");
+/// The AppleScript name, also used in logs.
+impl std::fmt::Display for Browser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Browser::Safari => "Safari",
+            Browser::Chrome => "Google Chrome",
+        })
+    }
+}
+
+pub fn open(url: &str, b: Browser) {
+    let id = b.id();
+    let running = !NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(id)).is_empty();
+    debug!("{b}: {url} ({b} running: {running})");
     if !running {
-        let _ = std::process::Command::new("/usr/bin/open").args(["-b", SAFARI, url]).spawn();
+        let _ = std::process::Command::new("/usr/bin/open").args(["-b", id, url]).spawn();
         return;
     }
     let front = NSWorkspace::sharedWorkspace()
         .frontmostApplication()
         .and_then(|a| a.bundleIdentifier())
-        .is_some_and(|id| id.to_string() == SAFARI);
+        .is_some_and(|front| front.to_string() == id);
 
-    if !allowed() {
-        log!("nocast isn't allowed to control Safari. Turn it on in System Settings > Privacy & Security > Automation > nocast > Safari");
+    if !allowed(b) {
+        log!("nocast isn't allowed to control {b}. Turn it on in System Settings > Privacy & Security > Automation > nocast > {b}");
     }
 
-    // If talking to Safari fails for any reason, still open the site.
+    // If talking to the browser fails for any reason, still open the site.
     let fallback = || {
-        let _ = std::process::Command::new("/usr/bin/open").args(["-b", SAFARI, url]).spawn();
+        let _ = std::process::Command::new("/usr/bin/open").args(["-b", id, url]).spawn();
     };
-    let Some(listing) = run(LIST_TABS) else {
-        debug!("Safari: couldn't list tabs, opening the URL instead");
+    let Some(listing) = run(b, &list_tabs(b)) else {
+        debug!("{b}: couldn't list tabs, opening the URL instead");
         return fallback();
     };
     let tabs = Tabs::parse(&listing);
     let picked = tabs.pick(url, front);
     debug!(
-        "Safari: {} tabs, {} match, front tab {:?}, Safari in front: {front} -> {}",
+        "{b}: {} tabs, {} match, front tab {:?}, {b} in front: {front} -> {}",
         tabs.tabs.len(),
         tabs.tabs.iter().filter(|(_, _, u)| matches(u, url)).count(),
         tabs.front,
@@ -45,14 +64,18 @@ pub fn open(url: &str) {
     match picked {
         // Found: only switch tabs. Never open the URL again, which would reload it.
         Some((window, tab)) => {
-            let r = run(&format!(
-                r#"tell application "Safari"
+            let select = match b {
+                Browser::Safari => format!("set current tab of w to tab {tab} of w"),
+                Browser::Chrome => format!("set active tab index of w to {tab}"),
+            };
+            let r = run(b, &format!(
+                r#"tell application "{b}"
                     with timeout of 30 seconds
                         set w to window id {window}
                         try
                             if miniaturized of w then set miniaturized of w to false
                         end try
-                        set current tab of w to tab {tab} of w
+                        {select}
                         try
                             set index of w to 1
                         end try
@@ -62,18 +85,29 @@ pub fn open(url: &str) {
                 return "ok""#
             ));
             if r.is_none() {
-                debug!("Safari: couldn't switch to the tab");
+                debug!("{b}: couldn't switch to the tab");
             }
         }
         None => {
             let url = url.replace('\\', "\\\\").replace('"', "\\\"");
-            let r = run(&format!(
-                r#"tell application "Safari"
+            // A new Chrome tab is selected by itself.
+            let (new_tab, new_window) = match b {
+                Browser::Safari => (
+                    format!(r#"tell window 1 to set current tab to (make new tab at end of tabs with properties {{URL:"{url}"}})"#),
+                    format!(r#"make new document with properties {{URL:"{url}"}}"#),
+                ),
+                Browser::Chrome => (
+                    format!(r#"make new tab at end of tabs of window 1 with properties {{URL:"{url}"}}"#),
+                    format!(r#"set URL of active tab of (make new window) to "{url}""#),
+                ),
+            };
+            let r = run(b, &format!(
+                r#"tell application "{b}"
                     with timeout of 30 seconds
                         try
-                            tell window 1 to set current tab to (make new tab at end of tabs with properties {{URL:"{url}"}})
+                            {new_tab}
                         on error
-                            make new document with properties {{URL:"{url}"}}
+                            {new_window}
                         end try
                         activate
                     end timeout
@@ -81,7 +115,7 @@ pub fn open(url: &str) {
                 return "ok""#
             ));
             if r.is_none() {
-                debug!("Safari: script failed, opening the URL instead");
+                debug!("{b}: script failed, opening the URL instead");
                 fallback();
             }
         }
@@ -90,16 +124,21 @@ pub fn open(url: &str) {
 
 /// One line per tab: "window id<TAB>tab index<TAB>url". The first line is
 /// "front<TAB>window id<TAB>current tab index" for the frontmost window.
-const LIST_TABS: &str = r#"
+fn list_tabs(b: Browser) -> String {
+    let front_tab = match b {
+        Browser::Safari => "index of current tab of window 1",
+        Browser::Chrome => "active tab index of window 1",
+    };
+    format!(r#"
 set tabChar to character id 9
 set res to ""
-tell application "Safari"
+tell application "{b}"
     with timeout of 30 seconds
         try
-            set res to "front" & tabChar & (id of window 1) & tabChar & (index of current tab of window 1) & linefeed
+            set res to "front" & tabChar & (id of window 1) & tabChar & ({front_tab}) & linefeed
         end try
         -- Fetch the ids first: looping over "id of every window" directly
-        -- makes AppleScript ask Safari for "item 1 of id of every window".
+        -- makes AppleScript ask {b} for "item 1 of id of every window".
         set wids to id of every window
         repeat with n from 1 to count of wids
             set wid to item n of wids
@@ -115,9 +154,10 @@ tell application "Safari"
     end timeout
 end tell
 return res
-"#;
+"#)
+}
 
-fn run(source: &str) -> Option<String> {
+fn run(b: Browser, source: &str) -> Option<String> {
     let script = NSAppleScript::initWithSource(NSAppleScript::alloc(), &NSString::from_str(source))?;
     let mut error: Option<Retained<NSDictionary<NSString, AnyObject>>> = None;
     // Returns nil on error (the generated binding assumes it never does, so call it directly).
@@ -136,7 +176,7 @@ fn run(source: &str) -> Option<String> {
         };
         let which = source.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
         log!(
-            "Safari script failed: error {}: {} (script starting \"{which}\")",
+            "{b} script failed: error {}: {} (script starting \"{which}\")",
             get("NSAppleScriptErrorNumber"),
             get("NSAppleScriptErrorMessage"),
         );
@@ -145,14 +185,15 @@ fn run(source: &str) -> Option<String> {
     Some(result.and_then(|r| r.stringValue()).map(|s| s.to_string()).unwrap_or_default())
 }
 
-/// Asks macOS whether nocast may send Apple Events to Safari, prompting if needed.
-fn allowed() -> bool {
+/// Asks macOS whether nocast may send Apple Events to the browser, prompting if needed.
+fn allowed(b: Browser) -> bool {
     use crate::ffi::{AEDesc, AECreateDesc, AEDeterminePermissionToAutomateTarget, AEDisposeDesc};
     const TYPE_BUNDLE_ID: u32 = u32::from_be_bytes(*b"bund");
     const WILDCARD: u32 = u32::from_be_bytes(*b"****");
+    let id = b.id();
     let mut target = AEDesc { descriptor_type: 0, data_handle: std::ptr::null_mut() };
     let status = unsafe {
-        if AECreateDesc(TYPE_BUNDLE_ID, SAFARI.as_ptr().cast(), SAFARI.len() as isize, &mut target) != 0 {
+        if AECreateDesc(TYPE_BUNDLE_ID, id.as_ptr().cast(), id.len() as isize, &mut target) != 0 {
             return true; // can't tell; just try
         }
         let s = AEDeterminePermissionToAutomateTarget(&target, WILDCARD, WILDCARD, true);
@@ -160,13 +201,13 @@ fn allowed() -> bool {
         s
     };
     debug!(
-        "Safari: permission check: {status} ({})",
+        "{b}: permission check: {status} ({})",
         match status {
-            0 => "allowed",
-            -1743 => "denied",
-            -1744 => "would need to ask",
-            -600 => "Safari not running",
-            _ => "unknown",
+            0 => "allowed".to_string(),
+            -1743 => "denied".to_string(),
+            -1744 => "would need to ask".to_string(),
+            -600 => format!("{b} not running"),
+            _ => "unknown".to_string(),
         }
     );
     status != -1743
@@ -196,10 +237,10 @@ impl Tabs {
         t
     }
 
-    /// The tab to show: if Safari is in front and already on a match, the next match
+    /// The tab to show: if the browser is in front and already on a match, the next match
     /// (or the same one if it's the only one); otherwise the front window's tab if it
     /// matches, else the first match.
-    fn pick(&self, url: &str, safari_front: bool) -> Option<(i64, i64)> {
+    fn pick(&self, url: &str, browser_front: bool) -> Option<(i64, i64)> {
         let hits: Vec<(i64, i64)> = self
             .tabs
             .iter()
@@ -208,7 +249,7 @@ impl Tabs {
             .collect();
         let first = *hits.first()?;
         let Some(i) = self.front.and_then(|f| hits.iter().position(|h| *h == f)) else { return Some(first) };
-        Some(if safari_front { hits[(i + 1) % hits.len()] } else { hits[i] })
+        Some(if browser_front { hits[(i + 1) % hits.len()] } else { hits[i] })
     }
 }
 
@@ -256,14 +297,23 @@ mod tests {
         assert_eq!(t.front, Some((7, 2)));
         assert_eq!(t.tabs.len(), 4);
         let gmail = "https://mail.google.com";
-        // Safari in front, on a Gmail tab: go to the next Gmail tab.
+        // Browser in front, on a Gmail tab: go to the next Gmail tab.
         assert_eq!(t.pick(gmail, true), Some((9, 1)));
-        // Safari in the background: just bring the current Gmail tab forward.
+        // Browser in the background: just bring the current Gmail tab forward.
         assert_eq!(t.pick(gmail, false), Some((7, 2)));
         // Not on a match: first match. Only one match: stay on it.
         assert_eq!(t.pick("apple.com", true), Some((7, 1)));
         assert_eq!(t.pick("apple.com", false), Some((7, 1)));
         // Not open anywhere.
         assert_eq!(t.pick("https://example.com", true), None);
+    }
+
+    #[test]
+    fn scripts_name_the_browser() {
+        let safari = list_tabs(Browser::Safari);
+        assert!(safari.contains("tell application \"Safari\"") && safari.contains("(index of current tab of window 1)"));
+        let chrome = list_tabs(Browser::Chrome);
+        assert!(chrome.contains("tell application \"Google Chrome\"") && chrome.contains("(active tab index of window 1)"));
+        assert_eq!(Browser::Chrome.id(), "com.google.Chrome");
     }
 }

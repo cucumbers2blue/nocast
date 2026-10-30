@@ -5,13 +5,13 @@
 
 #[macro_use]
 mod log;
+mod browser;
 mod config;
 mod ffi;
 mod launcher;
-mod safari;
 mod windows;
 
-use config::{Action, Config, MODS};
+use config::{Action, Browser, Config, MODS};
 use ffi::*;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSRunningApplication, NSWorkspace, NSWorkspaceOpenConfiguration};
@@ -23,7 +23,7 @@ use std::ptr::{null, null_mut, NonNull};
 use std::sync::{Mutex, RwLock};
 use std::time::SystemTime;
 
-static CONFIG: RwLock<Config> = RwLock::new(Config { launcher: None, apps: Vec::new(), win: Vec::new(), debug: false });
+static CONFIG: RwLock<Config> = RwLock::new(Config { launcher: None, apps: Vec::new(), win: Vec::new(), debug: false, browser: Browser::Safari });
 static MTIME: Mutex<Option<SystemTime>> = Mutex::new(None);
 
 pub fn with_config<R>(f: impl FnOnce(&Config) -> R) -> R {
@@ -46,7 +46,7 @@ fn reload_config() {
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let cfg = Config::parse(&text);
     log::DEBUG.store(cfg.debug, std::sync::atomic::Ordering::Relaxed);
-    debug!("config loaded: launcher {:?}, {} window hotkeys", cfg.launcher, cfg.win.len());
+    debug!("config loaded: launcher {:?}, {} window hotkeys, browser {}", cfg.launcher, cfg.win.len(), cfg.browser);
     for a in &cfg.apps {
         let target = a.url.clone().or_else(|| a.path.as_ref().map(|p| p.display().to_string()));
         debug!("  {:<20} {:<50} {:?}", a.name, target.unwrap_or("NOT FOUND".into()), a.hotkey);
@@ -137,7 +137,7 @@ pub fn open_app(i: usize, toggle: bool) {
     };
     debug!("open {name}: {}", url.clone().or_else(|| path.as_ref().map(|p| p.display().to_string())).unwrap_or("not found, trying open -a".into()));
     if let Some(url) = url {
-        safari::open(&url);
+        browser::open(&url, with_config(|c| c.browser));
         return;
     }
     let ws = NSWorkspace::sharedWorkspace();
