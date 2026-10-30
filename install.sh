@@ -59,6 +59,6 @@ nocast is installed and running.
    and turn nocast on. Hotkeys start working right away.
 2. To use cmd+space, turn off Spotlight's shortcut:
    System Settings > Keyboard > Keyboard Shortcuts > Spotlight.
-3. The first time you open a website, allow nocast to control Safari.
+3. The first time you open a website, allow nocast to control Safari (or Chrome).
 4. Edit your config:  open -e ~/.config/nocast.conf   (saved changes apply instantly)
 MSG

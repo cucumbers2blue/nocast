@@ -10,7 +10,7 @@ curl -fsSL https://raw.githubusercontent.com/cucumbers2blue/nocast/main/install.
 
 Then:
 
-1. Allow Accessibility when macOS asks (System Settings > Privacy & Security > Accessibility > nocast on). You'll be asked again after each update. Websites also ask once to control Safari.
+1. Allow Accessibility when macOS asks (System Settings > Privacy & Security > Accessibility > nocast on). You'll be asked again after each update. Websites also ask once to control Safari (or Chrome).
 2. If you use `cmd+space`, turn off Spotlight's shortcut in System Settings > Keyboard > Keyboard Shortcuts > Spotlight.
 
 Uninstall:
@@ -44,6 +44,7 @@ next    opt+cmd+up
 - Modifiers: `cmd`, `opt`, `ctrl`, `shift`. Keys: `a`–`z`, `0`–`9`, `space`, `up`, `down`, `left`, `right`, `return`, `tab`, `escape`, `f1`–`f12`, punctuation.
 - An app hotkey opens the app, or hides it if it's already in front.
 - Websites: a name, the address, and an optional hotkey. If a Safari tab already has the site open (any page under that address), nocast switches to it; press again to cycle through matching tabs. Otherwise it opens a new tab. The first time, macOS asks to let nocast control Safari.
+- Browser: add a line `browser chrome` to use Google Chrome for websites instead. `browser safari` is the default.
 - Launcher: type, and the best match completes in grey. Its assigned shortcut appears on the right using macOS symbols (for example, `⌥J` or `⌥⌘G`), and updates as you cycle matches. Return opens it, up/down or tab cycles matches, escape closes.
 - `full` fills the screen except the menu bar and Dock. `next` moves the window to the next display, keeping its relative size and position.
 
