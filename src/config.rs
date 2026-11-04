@@ -5,6 +5,7 @@
 //   Logic Pro                (an app you only search for)
 //   full      opt+up         (also: left, right, next)
 //   browser   chrome         (websites in Chrome instead of Safari)
+//   youtube-search opt+cmd+y (the default; `youtube-search off` turns it off)
 
 use std::path::PathBuf;
 
@@ -26,6 +27,9 @@ Finder
 # For Chrome instead, add a line: browser chrome
 # Gmail   https://mail.google.com   opt+g
 
+# Search YouTube in the browser. opt+cmd+y unless changed here (or: off).
+# youtube-search   opt+cmd+y
+
 full    opt+up
 left    opt+left
 right   opt+right
@@ -34,6 +38,9 @@ next    opt+cmd+up
 # Log every step. Watch it live with: open -a Console ~/Library/Logs/nocast.log
 # debug
 ";
+
+/// The YouTube search hotkey unless the config sets `youtube-search`.
+pub const YOUTUBE: &str = "opt+cmd+y";
 
 pub const CMD: u64 = 0x100000;
 pub const OPT: u64 = 0x80000;
@@ -85,6 +92,7 @@ pub enum Win {
 #[derive(Clone, Copy, Debug)]
 pub enum Action {
     Launcher,
+    YouTube,
     App(usize),
     Win(Win),
 }
@@ -108,6 +116,7 @@ pub struct App {
 #[derive(Default)]
 pub struct Config {
     pub launcher: Option<Hotkey>,
+    pub youtube: Option<Hotkey>,
     pub apps: Vec<App>,
     pub win: Vec<(Hotkey, Win)>,
     pub debug: bool,
@@ -123,11 +132,15 @@ impl Config {
         if let Some(i) = self.apps.iter().position(|a| a.hotkey == Some(hk)) {
             return Some(Action::App(i));
         }
-        self.win.iter().find(|(h, _)| *h == hk).map(|(_, w)| Action::Win(*w))
+        if let Some((_, w)) = self.win.iter().find(|(h, _)| *h == hk) {
+            return Some(Action::Win(*w));
+        }
+        // Last, so a hotkey you assigned yourself wins over the default.
+        (self.youtube == Some(hk)).then_some(Action::YouTube)
     }
 
     pub fn parse(text: &str) -> Config {
-        let mut cfg = Config::default();
+        let mut cfg = Config { youtube: parse_hotkey(YOUTUBE), ..Config::default() };
         for (n, raw) in text.lines().enumerate() {
             let line = raw.split('#').next().unwrap_or("").trim();
             if line.is_empty() {
@@ -144,6 +157,16 @@ impl Config {
                     "safari" => cfg.browser = Browser::Safari,
                     "chrome" | "google chrome" => cfg.browser = Browser::Chrome,
                     _ => log!("config line {}: unknown browser (use safari or chrome): {raw}", n + 1),
+                }
+                continue;
+            }
+            if first.eq_ignore_ascii_case("youtube-search") && !rest.trim().is_empty() {
+                match rest.trim().to_lowercase().as_str() {
+                    "off" | "none" => cfg.youtube = None,
+                    r => match parse_hotkey(r) {
+                        Some(h) => cfg.youtube = Some(h),
+                        None => log!("config line {}: bad hotkey: {raw}", n + 1),
+                    },
                 }
                 continue;
             }
@@ -368,6 +391,22 @@ mod tests {
         assert!(matches!(c.lookup(126, OPT | CMD), Some(Action::Win(Win::Next))));
         assert!(matches!(c.lookup(38, OPT), Some(Action::App(0))));
         assert!(c.lookup(38, CMD).is_none());
+    }
+
+    #[test]
+    fn youtube_hotkey() {
+        let y = Some(Hotkey { key: 16, mods: OPT | CMD });
+        assert_eq!(Config::parse(DEFAULT).youtube, y);
+        assert_eq!(Config::parse("").youtube, y);
+        assert!(matches!(Config::parse("").lookup(16, OPT | CMD), Some(Action::YouTube)));
+        assert_eq!(Config::parse("youtube-search ctrl+opt+y\n").youtube, Some(Hotkey { key: 16, mods: CTRL | OPT }));
+        assert_eq!(Config::parse("YouTube-Search off\n").youtube, None);
+        // An app or website on the same hotkey wins over the default.
+        let c = Config::parse("Gmail https://mail.google.com opt+cmd+y\n");
+        assert!(matches!(c.lookup(16, OPT | CMD), Some(Action::App(0))));
+        // "YouTube" is still an ordinary app or website name.
+        let c = Config::parse("YouTube youtube.com opt+y\n");
+        assert_eq!(c.apps[0].url.as_deref(), Some("https://youtube.com"));
     }
 
     #[test]

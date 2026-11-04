@@ -28,6 +28,33 @@ impl std::fmt::Display for Browser {
 }
 
 pub fn open(url: &str, b: Browser) {
+    go(url, None, b);
+}
+
+/// YouTube search: load the results in an open youtube.com tab (the front one if it is
+/// one), or in a new tab.
+pub fn search_youtube(query: &str, b: Browser) {
+    go(&youtube_url(query), Some(YOUTUBE), b);
+}
+
+const YOUTUBE: &str = "https://youtube.com";
+
+/// https://www.youtube.com/results?search_query=<query, form-encoded>
+pub fn youtube_url(query: &str) -> String {
+    let mut q = String::new();
+    for byte in query.trim().bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => q.push(byte as char),
+            b' ' => q.push('+'),
+            _ => q.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    format!("https://www.youtube.com/results?search_query={q}")
+}
+
+/// Shows `url`. Without `navigate_in`, switches to a tab already under `url`. With it,
+/// loads `url` in a tab under `navigate_in` instead.
+fn go(url: &str, navigate_in: Option<&str>, b: Browser) {
     let id = b.id();
     let running = !NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(id)).is_empty();
     debug!("{b}: {url} ({b} running: {running})");
@@ -53,21 +80,28 @@ pub fn open(url: &str, b: Browser) {
         return fallback();
     };
     let tabs = Tabs::parse(&listing);
-    let picked = tabs.pick(url, front);
+    let want = navigate_in.unwrap_or(url);
+    // When navigating, never cycle: reuse the front tab if it matches.
+    let picked = tabs.pick(want, front && navigate_in.is_none());
     debug!(
         "{b}: {} tabs, {} match, front tab {:?}, {b} in front: {front} -> {}",
         tabs.tabs.len(),
-        tabs.tabs.iter().filter(|(_, _, u)| matches(u, url)).count(),
+        tabs.tabs.iter().filter(|(_, _, u)| matches(u, want)).count(),
         tabs.front,
         picked.map_or("new tab".into(), |(w, t)| format!("window {w} tab {t}"))
     );
     match picked {
-        // Found: only switch tabs. Never open the URL again, which would reload it.
+        // Found: only switch tabs. Never open the URL again, which would reload it
+        // (unless navigating, e.g. to new YouTube results).
         Some((window, tab)) => {
-            let select = match b {
+            let mut select = match b {
                 Browser::Safari => format!("set current tab of w to tab {tab} of w"),
                 Browser::Chrome => format!("set active tab index of w to {tab}"),
             };
+            if navigate_in.is_some() {
+                let url = escape(url);
+                select = format!("set URL of tab {tab} of w to \"{url}\"\n                        {select}");
+            }
             let r = run(b, &format!(
                 r#"tell application "{b}"
                     with timeout of 30 seconds
@@ -89,7 +123,7 @@ pub fn open(url: &str, b: Browser) {
             }
         }
         None => {
-            let url = url.replace('\\', "\\\\").replace('"', "\\\"");
+            let url = escape(url);
             // A new Chrome tab is selected by itself.
             let (new_tab, new_window) = match b {
                 Browser::Safari => (
@@ -120,6 +154,11 @@ pub fn open(url: &str, b: Browser) {
             }
         }
     }
+}
+
+/// For a string literal inside an AppleScript.
+fn escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// One line per tab: "window id<TAB>tab index<TAB>url". The first line is
@@ -306,6 +345,33 @@ mod tests {
         assert_eq!(t.pick("apple.com", false), Some((7, 1)));
         // Not open anywhere.
         assert_eq!(t.pick("https://example.com", true), None);
+    }
+
+    #[test]
+    fn youtube_search_url() {
+        let base = "https://www.youtube.com/results?search_query=";
+        assert_eq!(youtube_url("lofi hip hop"), format!("{base}lofi+hip+hop"));
+        assert_eq!(youtube_url("  rust  "), format!("{base}rust"));
+        assert_eq!(youtube_url("a&b=c#d?e%f+g/h"), format!("{base}a%26b%3Dc%23d%3Fe%25f%2Bg%2Fh"));
+        assert_eq!(youtube_url("say \"hi\" \\ 'x'"), format!("{base}say+%22hi%22+%5C+%27x%27"));
+        assert_eq!(youtube_url("café 日本"), format!("{base}caf%C3%A9+%E6%97%A5%E6%9C%AC"));
+        assert_eq!(youtube_url("a-b_c.d~e"), format!("{base}a-b_c.d~e"));
+        // Safe inside an AppleScript string as is.
+        let u = youtube_url("\"\\\n\t");
+        assert!(!u.contains(['"', '\\', '\n', '\t']));
+        assert_eq!(escape(r#"a"b\c"#), r#"a\"b\\c"#);
+        // Results go to an open youtube.com tab, not music.youtube.com or m.youtube.com.
+        assert!(matches(&youtube_url("x"), YOUTUBE));
+        assert!(matches("https://www.youtube.com/watch?v=1", YOUTUBE));
+        assert!(!matches("https://music.youtube.com/", YOUTUBE));
+        assert!(!matches("https://m.youtube.com/", YOUTUBE));
+    }
+
+    #[test]
+    fn navigating_reuses_the_front_tab() {
+        let t = Tabs::parse("front\t7\t2\n7\t1\thttps://www.youtube.com/a\n7\t2\thttps://www.youtube.com/b\n");
+        // What search_youtube passes: never cycle to the next match.
+        assert_eq!(t.pick(YOUTUBE, false), Some((7, 2)));
     }
 
     #[test]
