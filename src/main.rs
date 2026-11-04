@@ -23,7 +23,7 @@ use std::ptr::{null, null_mut, NonNull};
 use std::sync::{Mutex, RwLock};
 use std::time::SystemTime;
 
-static CONFIG: RwLock<Config> = RwLock::new(Config { launcher: None, apps: Vec::new(), win: Vec::new(), debug: false, browser: Browser::Safari });
+static CONFIG: RwLock<Config> = RwLock::new(Config { launcher: None, youtube: None, apps: Vec::new(), win: Vec::new(), debug: false, browser: Browser::Safari });
 static MTIME: Mutex<Option<SystemTime>> = Mutex::new(None);
 
 pub fn with_config<R>(f: impl FnOnce(&Config) -> R) -> R {
@@ -118,7 +118,10 @@ extern "C" fn run_action(ctx: *mut c_void) {
     let mtm = MainThreadMarker::new().expect("main thread");
     match action {
         Action::Launcher => {
-            launcher::with(|l| l.toggle());
+            launcher::with(|l| l.toggle(false));
+        }
+        Action::YouTube => {
+            launcher::with(|l| l.toggle(true));
         }
         Action::App(i) => {
             launcher::with(|l| l.hide());

@@ -1,5 +1,6 @@
 // The search box: a small floating panel that lists the apps from the config.
 // It never activates nocast, so closing it hands focus straight back.
+// The same panel, with a thin red border and no app matches, searches YouTube.
 
 use crate::config::Config;
 use objc2::rc::Retained;
@@ -13,12 +14,18 @@ use std::ptr::{null_mut, NonNull};
 const W: f64 = 560.0;
 const H: f64 = 58.0;
 const FONT: f64 = 22.0;
+/// The window's own corner radius, so the YouTube border follows the panel's edge.
+fn corner_radius() -> f64 {
+    if NSProcessInfo::processInfo().operatingSystemVersion().majorVersion >= 26 { 16.0 } else { 10.0 }
+}
 
 pub struct Launcher {
     panel: Retained<NSPanel>,
     query_label: Retained<NSTextField>,
     shortcut_label: Retained<NSTextField>,
+    youtube_border: Retained<NSBox>,
     shown: Cell<bool>,
+    youtube: Cell<bool>,
     state: RefCell<State>,
     _observers: RefCell<Vec<Retained<AnyObject>>>,
 }
@@ -127,11 +134,30 @@ pub fn init(mtm: MainThreadMarker) {
     shortcut_label.setAlignment(NSTextAlignment::Right);
     content.addSubview(&shortcut_label);
 
+    // YouTube mode: a thin, soft red border with a faint glow, hidden otherwise.
+    let youtube_border = NSBox::initWithFrame(NSBox::alloc(mtm), rect);
+    youtube_border.setBoxType(NSBoxType::Custom);
+    youtube_border.setTitlePosition(NSTitlePosition::NoTitle);
+    youtube_border.setFillColor(&NSColor::clearColor());
+    youtube_border.setBorderWidth(1.5);
+    youtube_border.setCornerRadius(corner_radius());
+    youtube_border.setBorderColor(&NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.0, 0.0, 0.55));
+    let glow = NSShadow::new();
+    glow.setShadowColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.0, 0.0, 0.5)));
+    glow.setShadowBlurRadius(6.0);
+    glow.setShadowOffset(NSSize::new(0.0, 0.0));
+    youtube_border.setWantsLayer(true);
+    youtube_border.setShadow(Some(&glow));
+    youtube_border.setHidden(true);
+    content.addSubview(&youtube_border);
+
     let launcher = Launcher {
         panel,
         query_label,
         shortcut_label,
+        youtube_border,
         shown: Cell::new(false),
+        youtube: Cell::new(false),
         state: RefCell::new(State::default()),
         _observers: RefCell::new(vec![]),
     };
@@ -171,11 +197,14 @@ pub fn with<R>(f: impl FnOnce(&Launcher) -> R) -> Option<R> {
 }
 
 impl Launcher {
-    pub fn toggle(&self) {
-        if self.shown.get() { self.hide() } else { self.show() }
+    /// Opens the launcher (or with `youtube`, YouTube search); closes it if that one is open.
+    pub fn toggle(&self, youtube: bool) {
+        if self.shown.get() && self.youtube.get() == youtube { self.hide() } else { self.show(youtube) }
     }
 
-    pub fn show(&self) {
+    pub fn show(&self, youtube: bool) {
+        self.youtube.set(youtube);
+        self.youtube_border.setHidden(!youtube);
         {
             let mut s = self.state.borrow_mut();
             s.query.clear();
@@ -257,6 +286,15 @@ impl Launcher {
     }
 
     fn launch_selected(&self) {
+        if self.youtube.get() {
+            let query = self.state.borrow().query.trim().to_string();
+            self.hide();
+            debug!("youtube: return pressed, query {query:?}");
+            if !query.is_empty() {
+                crate::browser::search_youtube(&query, crate::with_config(|c| c.browser));
+            }
+            return;
+        }
         let app = {
             let s = self.state.borrow();
             s.matches.get(s.sel).copied()
@@ -269,10 +307,11 @@ impl Launcher {
     }
 
     fn render(&self) {
+        let youtube = self.youtube.get();
         let (query, name) = {
             let mut s = self.state.borrow_mut();
             let found = crate::with_config(|c| {
-                s.matches = matches(c, &s.query);
+                s.matches = if youtube { vec![] } else { matches(c, &s.query) };
                 if s.sel >= s.matches.len() {
                     s.sel = 0;
                 }
@@ -301,7 +340,8 @@ impl Launcher {
         let font = NSFont::systemFontOfSize_weight(FONT, unsafe { NSFontWeightLight });
         let text = NSMutableAttributedString::new();
         if query.is_empty() {
-            text.appendAttributedString(&styled("Search apps", &NSColor::tertiaryLabelColor(), &font));
+            let placeholder = if youtube { "Search YouTube" } else { "Search apps" };
+            text.appendAttributedString(&styled(placeholder, &NSColor::tertiaryLabelColor(), &font));
         } else {
             text.appendAttributedString(&styled(&query, &NSColor::labelColor(), &font));
             if let Some((name, found, _)) = name {
