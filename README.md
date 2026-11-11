@@ -10,7 +10,7 @@ curl -fsSL https://raw.githubusercontent.com/cucumbers2blue/nocast/main/install.
 
 Then:
 
-1. Allow Accessibility when macOS asks (System Settings > Privacy & Security > Accessibility > nocast on). You'll be asked again after each update. Websites also ask once to control Safari (or Chrome).
+1. Allow Accessibility when macOS asks (System Settings > Privacy & Security > Accessibility > nocast on). You'll be asked again after each update. Websites also ask once to control Safari (or Chrome, or Helium).
 2. If you use `cmd+space`, turn off Spotlight's shortcut in System Settings > Keyboard > Keyboard Shortcuts > Spotlight.
 
 Uninstall:
@@ -44,7 +44,7 @@ next    opt+cmd+up
 - Modifiers: `cmd`, `opt`, `ctrl`, `shift`. Keys: `a`–`z`, `0`–`9`, `space`, `up`, `down`, `left`, `right`, `return`, `tab`, `escape`, `f1`–`f12`, punctuation.
 - An app hotkey opens the app, or hides it if it's already in front.
 - Websites: a name, the address, and an optional hotkey. If a Safari tab already has the site open (any page under that address), nocast switches to it; press again to cycle through matching tabs. Otherwise it opens a new tab. The first time, macOS asks to let nocast control Safari.
-- Browser: add a line `browser chrome` to use Google Chrome for websites instead. `browser safari` is the default.
+- Browser: add a line `browser chrome` or `browser helium` to use Google Chrome or Helium for websites instead. `browser safari` is the default.
 - YouTube search: `opt+cmd+y` opens the search bar with a thin red border. Type and press return: if a youtube.com tab is open in your browser, it loads the results there and brings it to the front; otherwise it opens them in a new tab. Escape closes. Change the hotkey with a line like `youtube-search ctrl+opt+y`, or turn it off with `youtube-search off`. Your own app or website hotkeys take precedence.
 - Launcher: type, and the best match completes in grey. Its assigned shortcut appears on the right using macOS symbols (for example, `⌥J` or `⌥⌘G`), and updates as you cycle matches. Return opens it, up/down or tab cycles matches, escape closes.
 - `full` fills the screen except the menu bar and Dock. `next` moves the window to the next display, keeping its relative size and position.

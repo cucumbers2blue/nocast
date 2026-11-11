@@ -1,5 +1,5 @@
 // Websites: jump to the browser tab that already has the site open, or open it.
-// Talks to Safari, or Chrome with `browser chrome`, via AppleScript (macOS asks once for permission).
+// Talks to Safari, or Chrome/Helium with `browser chrome`/`browser helium`, via AppleScript (macOS asks once for permission).
 
 use crate::config::Browser;
 use objc2::rc::Retained;
@@ -13,6 +13,7 @@ impl Browser {
         match self {
             Browser::Safari => "com.apple.Safari",
             Browser::Chrome => "com.google.Chrome",
+            Browser::Helium => "net.imput.helium",
         }
     }
 }
@@ -23,6 +24,7 @@ impl std::fmt::Display for Browser {
         f.write_str(match self {
             Browser::Safari => "Safari",
             Browser::Chrome => "Google Chrome",
+            Browser::Helium => "Helium",
         })
     }
 }
@@ -96,7 +98,7 @@ fn go(url: &str, navigate_in: Option<&str>, b: Browser) {
         Some((window, tab)) => {
             let mut select = match b {
                 Browser::Safari => format!("set current tab of w to tab {tab} of w"),
-                Browser::Chrome => format!("set active tab index of w to {tab}"),
+                Browser::Chrome | Browser::Helium => format!("set active tab index of w to {tab}"),
             };
             if navigate_in.is_some() {
                 let url = escape(url);
@@ -124,13 +126,13 @@ fn go(url: &str, navigate_in: Option<&str>, b: Browser) {
         }
         None => {
             let url = escape(url);
-            // A new Chrome tab is selected by itself.
+            // A new Chrome (or Helium) tab is selected by itself.
             let (new_tab, new_window) = match b {
                 Browser::Safari => (
                     format!(r#"tell window 1 to set current tab to (make new tab at end of tabs with properties {{URL:"{url}"}})"#),
                     format!(r#"make new document with properties {{URL:"{url}"}}"#),
                 ),
-                Browser::Chrome => (
+                Browser::Chrome | Browser::Helium => (
                     format!(r#"make new tab at end of tabs of window 1 with properties {{URL:"{url}"}}"#),
                     format!(r#"set URL of active tab of (make new window) to "{url}""#),
                 ),
@@ -166,7 +168,7 @@ fn escape(s: &str) -> String {
 fn list_tabs(b: Browser) -> String {
     let front_tab = match b {
         Browser::Safari => "index of current tab of window 1",
-        Browser::Chrome => "active tab index of window 1",
+        Browser::Chrome | Browser::Helium => "active tab index of window 1",
     };
     format!(r#"
 set tabChar to character id 9
@@ -381,5 +383,9 @@ mod tests {
         let chrome = list_tabs(Browser::Chrome);
         assert!(chrome.contains("tell application \"Google Chrome\"") && chrome.contains("(active tab index of window 1)"));
         assert_eq!(Browser::Chrome.id(), "com.google.Chrome");
+        // Helium is Chromium: the same script as Chrome, under its own name.
+        let helium = list_tabs(Browser::Helium);
+        assert_eq!(helium, chrome.replace("Google Chrome", "Helium"));
+        assert_eq!(Browser::Helium.id(), "net.imput.helium");
     }
 }
