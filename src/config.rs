@@ -4,7 +4,7 @@
 //   Safari    opt+j          (an app, with an optional hotkey)
 //   Logic Pro                (an app you only search for)
 //   full      opt+up         (also: left, right, next)
-//   browser   chrome         (websites in Chrome instead of Safari)
+//   browser   chrome         (websites in Chrome or Helium instead of Safari)
 //   youtube-search opt+cmd+y (the default; `youtube-search off` turns it off)
 
 use std::path::PathBuf;
@@ -24,7 +24,7 @@ Finder
 
 # websites: a name, the address, an optional hotkey.
 # If the site is already open in Safari, nocast switches to that tab.
-# For Chrome instead, add a line: browser chrome
+# For Chrome or Helium instead, add a line: browser chrome (or: browser helium)
 # Gmail   https://mail.google.com   opt+g
 
 # Search YouTube in the browser. opt+cmd+y unless changed here (or: off).
@@ -97,12 +97,14 @@ pub enum Action {
     Win(Win),
 }
 
-/// Where websites open: `browser safari` (the default) or `browser chrome`.
+/// Where websites open: `browser safari` (the default), `browser chrome` or `browser helium`.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub enum Browser {
     #[default]
     Safari,
     Chrome,
+    /// Chromium-based, same AppleScript as Chrome.
+    Helium,
 }
 
 /// An app, or a website when `url` is set.
@@ -156,7 +158,8 @@ impl Config {
                 match rest.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase().as_str() {
                     "safari" => cfg.browser = Browser::Safari,
                     "chrome" | "google chrome" => cfg.browser = Browser::Chrome,
-                    _ => log!("config line {}: unknown browser (use safari or chrome): {raw}", n + 1),
+                    "helium" => cfg.browser = Browser::Helium,
+                    _ => log!("config line {}: unknown browser (use safari, chrome or helium): {raw}", n + 1),
                 }
                 continue;
             }
@@ -415,6 +418,9 @@ mod tests {
         assert_eq!(Config::parse("browser chrome\n").browser, Browser::Chrome);
         assert_eq!(Config::parse("Browser  Google Chrome  # websites\n").browser, Browser::Chrome);
         assert_eq!(Config::parse("browser chrome\nbrowser safari\n").browser, Browser::Safari);
+        assert_eq!(Config::parse("browser helium\n").browser, Browser::Helium);
+        assert_eq!(Config::parse("BROWSER  Helium  # websites\n").browser, Browser::Helium);
+        assert_eq!(Config::parse("browser helium\nbrowser chrome\n").browser, Browser::Chrome);
         let c = Config::parse("browser firefox\n");
         assert_eq!(c.browser, Browser::Safari);
         assert!(c.apps.is_empty());
