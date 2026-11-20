@@ -32,11 +32,7 @@ pub fn with_config<R>(f: impl FnOnce(&Config) -> R) -> R {
 
 /// Re-reads the config if the file changed since last time. Cheap: one stat.
 fn reload_config() {
-    let path = config::path();
-    if !path.exists() {
-        let _ = std::fs::create_dir_all(path.parent().unwrap());
-        let _ = std::fs::write(&path, config::DEFAULT);
-    }
+    let path = config::ensure();
     let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
     let mut last = MTIME.lock().unwrap_or_else(|e| e.into_inner());
     if *last == mtime && mtime.is_some() {
@@ -175,6 +171,22 @@ fn open_by_name(name: String) {
                 log!("open -a {name}: {}", String::from_utf8_lossy(&out.stderr).trim())
             }
             Err(e) => log!("open -a {name}: {e}"),
+            _ => {}
+        }
+    });
+}
+
+/// Opens the config file in the default text editor. Creates it first if it's missing.
+pub fn open_config() {
+    let path = config::ensure();
+    let path_str = path.to_string_lossy().to_string();
+    debug!("open config: {path_str}");
+    std::thread::spawn(move || {
+        match std::process::Command::new("/usr/bin/open").args(["-t", &path_str]).output() {
+            Ok(out) if !out.status.success() => {
+                log!("open -t {path_str}: {}", String::from_utf8_lossy(&out.stderr).trim())
+            }
+            Err(e) => log!("open -t {path_str}: {e}"),
             _ => {}
         }
     });
