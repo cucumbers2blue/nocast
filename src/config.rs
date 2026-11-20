@@ -344,6 +344,18 @@ pub fn path() -> PathBuf {
     PathBuf::from(home()).join(".config/nocast.conf")
 }
 
+/// The config path, creating the file with the default contents if it's missing.
+pub fn ensure() -> PathBuf {
+    let path = path();
+    if !path.exists() {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&path, DEFAULT);
+    }
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

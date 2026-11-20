@@ -86,6 +86,11 @@ fn is_subsequence(needle: &str, hay: &str) -> bool {
     needle.chars().all(|c| it.any(|h| h == c))
 }
 
+/// In the normal launcher, "?" (ignoring spaces) opens the config file.
+fn is_config_query(query: &str) -> bool {
+    query.trim() == "?"
+}
+
 pub fn init(mtm: MainThreadMarker) {
     let style = NSWindowStyleMask::Titled
         | NSWindowStyleMask::FullSizeContentView
@@ -295,6 +300,12 @@ impl Launcher {
             }
             return;
         }
+        if is_config_query(&self.state.borrow().query) {
+            self.hide();
+            debug!("launcher: open config");
+            crate::open_config();
+            return;
+        }
         let app = {
             let s = self.state.borrow();
             s.matches.get(s.sel).copied()
@@ -310,8 +321,9 @@ impl Launcher {
         let youtube = self.youtube.get();
         let (query, name) = {
             let mut s = self.state.borrow_mut();
+            let open_config = !youtube && is_config_query(&s.query);
             let found = crate::with_config(|c| {
-                s.matches = if youtube { vec![] } else { matches(c, &s.query) };
+                s.matches = if youtube || open_config { vec![] } else { matches(c, &s.query) };
                 if s.sel >= s.matches.len() {
                     s.sel = 0;
                 }
@@ -344,7 +356,9 @@ impl Launcher {
             text.appendAttributedString(&styled(placeholder, &NSColor::tertiaryLabelColor(), &font));
         } else {
             text.appendAttributedString(&styled(&query, &NSColor::labelColor(), &font));
-            if let Some((name, found, _)) = name {
+            if !youtube && is_config_query(&query) {
+                text.appendAttributedString(&styled("  —  Open config", &NSColor::tertiaryLabelColor(), &font));
+            } else if let Some((name, found, _)) = name {
                 let mut rest = completion(&query, &name);
                 if !found {
                     rest.push_str("  (not found)");
@@ -385,5 +399,15 @@ mod tests {
         assert_eq!(completion("lo", "Logic Pro"), "gic Pro");
         assert_eq!(completion("LO", "Logic Pro"), "gic Pro");
         assert_eq!(completion("pro", "Logic Pro"), "  —  Logic Pro");
+    }
+
+    #[test]
+    fn question_opens_config() {
+        assert!(is_config_query("?"));
+        assert!(is_config_query("  ? "));
+        assert!(!is_config_query(""));
+        assert!(!is_config_query("??"));
+        assert!(!is_config_query("?foo"));
+        assert!(!is_config_query("config"));
     }
 }
