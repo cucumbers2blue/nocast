@@ -1,4 +1,4 @@
-// Websites: jump to the browser tab that already has the site open, or open it.
+// Browser integration for websites, YouTube search and the open-tab picker.
 // Talks to Safari, or Chrome/Helium with `browser chrome`/`browser helium`, via AppleScript (macOS asks once for permission).
 
 use crate::config::Browser;
@@ -39,6 +39,164 @@ pub fn search_youtube(query: &str, b: Browser) {
     go(&youtube_url(query), Some(YOUTUBE), b);
 }
 
+pub struct OpenTab {
+    window: i64,
+    index: i64,
+    id: Option<i64>,
+    title: String,
+    url: String,
+}
+
+impl OpenTab {
+    pub fn label(&self) -> &str {
+        if !self.title.trim().is_empty() {
+            &self.title
+        } else if !self.url.trim().is_empty() {
+            &self.url
+        } else {
+            "Untitled tab"
+        }
+    }
+}
+
+pub struct OpenTabs {
+    pid: i32,
+    pub tabs: Vec<OpenTab>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum TabAction {
+    Select,
+    Close,
+}
+
+pub fn open_tabs(b: Browser) -> Option<OpenTabs> {
+    let Some(app) = running_app(b) else {
+        return Some(OpenTabs { pid: 0, tabs: vec![] });
+    };
+    if !allowed(b) {
+        log!("{b} tabs require permission in System Settings > Privacy & Security > Automation > nocast");
+        return None;
+    }
+    let listing = execute(b, &describe_tabs(b))?;
+    let tabs = (1..=listing.numberOfItems())
+        .filter_map(|i| {
+            let item = listing.descriptorAtIndex(i)?;
+            let field = |n| item.descriptorAtIndex(n)?.stringValue().map(|s| s.to_string());
+            Some(OpenTab {
+                window: field(1)?.parse().ok()?,
+                index: field(2)?.parse().ok()?,
+                id: match b {
+                    Browser::Safari => None,
+                    Browser::Chrome | Browser::Helium => Some(field(3)?.parse().ok()?),
+                },
+                title: field(4).unwrap_or_default(),
+                url: field(5).unwrap_or_default(),
+            })
+        })
+        .collect();
+    Some(OpenTabs { pid: app.processIdentifier(), tabs })
+}
+
+impl OpenTabs {
+    pub fn act(&self, b: Browser, index: usize, action: TabAction) -> bool {
+        let Some(tab) = self.tabs.get(index) else { return false };
+        if !running_app(b).is_some_and(|app| app.processIdentifier() == self.pid) {
+            return false;
+        }
+        let (window, target) = if let Some(id) = tab.id {
+            (format!("\"{}\"", tab.window), format!("set pickedTab to tab id \"{id}\" of w"))
+        } else {
+            // Safari exposes tab positions. Check the selected slot before acting on it.
+            let title = escape(&tab.title);
+            let url = escape(&tab.url);
+            (tab.window.to_string(), format!(r#"
+                set pickedTab to tab {} of w
+                set pageTitle to name of pickedTab
+                set pageURL to URL of pickedTab
+                if pageTitle is missing value then set pageTitle to ""
+                if pageURL is missing value then set pageURL to ""
+                considering case
+                    if pageTitle is not "{title}" or pageURL is not "{url}" then return "stale"
+                end considering"#, tab.index))
+        };
+        let command = match action {
+            TabAction::Close => "close pickedTab".to_string(),
+            TabAction::Select => {
+                let (minimized, selected) = match b {
+                    Browser::Safari => ("miniaturized", "current tab"),
+                    Browser::Chrome | Browser::Helium => ("minimized", "active tab"),
+                };
+                format!(r#"
+                    set {selected} of w to pickedTab
+                    try
+                        if {minimized} of w then set {minimized} of w to false
+                    end try
+                    try
+                        set index of w to 1
+                    end try
+                    activate"#)
+            }
+        };
+        let app_id = b.id();
+        run(b, &format!(r#"
+            tell application id "{app_id}"
+                with timeout of 5 seconds
+                    set w to window id {window}
+                    {target}
+                    {command}
+                end timeout
+            end tell
+            return "ok"
+        "#)).as_deref() == Some("ok")
+    }
+}
+
+fn running_app(b: Browser) -> Option<Retained<NSRunningApplication>> {
+    NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(b.id())).firstObject()
+}
+
+fn describe_tabs(b: Browser) -> String {
+    let (ids, tab_id, check) = match b {
+        Browser::Safari => ("", "0", ""),
+        Browser::Chrome | Browser::Helium => (
+            "set pageIDs to id of every tab of w",
+            "item i of pageIDs",
+            " and pageIDs = (id of every tab of w)",
+        ),
+    };
+    let app_id = b.id();
+    format!(r#"
+set pages to {{}}
+tell application id "{app_id}"
+    with timeout of 5 seconds
+        set windowIDs to id of every window
+        repeat with n from 1 to count of windowIDs
+            set wid to item n of windowIDs
+            try
+                set w to window id wid
+                {ids}
+                set titles to name of every tab of w
+                set urls to URL of every tab of w
+                if (count of titles) = (count of urls){check} then
+                    repeat with i from 1 to count of titles
+                        set pageTitle to item i of titles
+                        set pageURL to item i of urls
+                        if pageTitle is missing value then set pageTitle to ""
+                        if pageURL is missing value then set pageURL to ""
+                        set end of pages to {{wid, i as integer, {tab_id}, pageTitle, pageURL}}
+                    end repeat
+                end if
+            on error errMessage number errNumber
+                if errNumber is not -1728 then error errMessage number errNumber
+            end try
+        end repeat
+    end timeout
+end tell
+return pages
+"#)
+}
+
 const YOUTUBE: &str = "https://youtube.com";
 
 /// https://www.youtube.com/results?search_query=<query, form-encoded>
@@ -58,7 +216,7 @@ pub fn youtube_url(query: &str) -> String {
 /// loads `url` in a tab under `navigate_in` instead.
 fn go(url: &str, navigate_in: Option<&str>, b: Browser) {
     let id = b.id();
-    let running = !NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(id)).is_empty();
+    let running = running_app(b).is_some();
     debug!("{b}: {url} ({b} running: {running})");
     if !running {
         let _ = std::process::Command::new("/usr/bin/open").args(["-b", id, url]).spawn();
@@ -160,7 +318,11 @@ fn go(url: &str, navigate_in: Option<&str>, b: Browser) {
 
 /// For a string literal inside an AppleScript.
 fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }
 
 /// One line per tab: "window id<TAB>tab index<TAB>url". The first line is
@@ -199,6 +361,10 @@ return res
 }
 
 fn run(b: Browser, source: &str) -> Option<String> {
+    Some(execute(b, source)?.stringValue().map(|s| s.to_string()).unwrap_or_default())
+}
+
+fn execute(b: Browser, source: &str) -> Option<Retained<NSAppleEventDescriptor>> {
     let script = NSAppleScript::initWithSource(NSAppleScript::alloc(), &NSString::from_str(source))?;
     let mut error: Option<Retained<NSDictionary<NSString, AnyObject>>> = None;
     // Returns nil on error (the generated binding assumes it never does, so call it directly).
@@ -223,7 +389,7 @@ fn run(b: Browser, source: &str) -> Option<String> {
         );
         return None;
     }
-    Some(result.and_then(|r| r.stringValue()).map(|s| s.to_string()).unwrap_or_default())
+    result
 }
 
 /// Asks macOS whether nocast may send Apple Events to the browser, prompting if needed.

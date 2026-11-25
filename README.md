@@ -44,8 +44,9 @@ next    opt+cmd+up
 - Modifiers: `cmd`, `opt`, `ctrl`, `shift`. Keys: `a`–`z`, `0`–`9`, `space`, `up`, `down`, `left`, `right`, `return`, `tab`, `escape`, `f1`–`f12`, punctuation.
 - An app hotkey opens the app, or hides it if it's already in front.
 - Websites: a name, the address, and an optional hotkey. If a Safari tab already has the site open (any page under that address), nocast switches to it; press again to cycle through matching tabs. Otherwise it opens a new tab. The first time, macOS asks to let nocast control Safari.
-- Browser: add a line `browser chrome` or `browser helium` to use Google Chrome or Helium for websites instead. `browser safari` is the default.
+- Browser: `browser chrome` selects Google Chrome and `browser helium` selects Helium for websites, YouTube search, and the tab list. `browser safari` is the default.
 - YouTube search: `opt+cmd+y` opens the search bar with a thin red border. Type and press return: if a youtube.com tab is open in your browser, it loads the results there and brings it to the front; otherwise it opens them in a new tab. Escape closes. Change the hotkey with a line like `youtube-search ctrl+opt+y`, or turn it off with `youtube-search off`. Your own app or website hotkeys take precedence.
+- Browser tabs: `opt+cmd+l` opens a blue-framed list of tabs across all windows in your configured browser. Use `J` and `K` to move down and up, press Return or a number shown on the right to switch to a tab, and press `D` to close the highlighted tab. When there are more than nine tabs, keep moving to reach the rest. Escape dismisses the list. Set `browser-tabs ctrl+opt+l` to change the hotkey or `browser-tabs off` to disable it.
 - Launcher: type, and the best match completes in grey. Its assigned shortcut appears on the right using macOS symbols (for example, `⌥J` or `⌥⌘G`), and updates as you cycle matches. Return opens it, up/down or tab cycles matches, escape closes. Type `?` and press return to open the config file in your default text editor.
 - `full` fills the screen except the menu bar and Dock. `next` moves the window to the next display, keeping its relative size and position.
 
