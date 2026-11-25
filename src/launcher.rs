@@ -1,8 +1,9 @@
 // The search box: a small floating panel that lists the apps from the config.
 // It never activates nocast, so closing it hands focus straight back.
-// The same panel, with a thin red border and no app matches, searches YouTube.
+// The same panel also searches YouTube and lists browser tabs.
 
-use crate::config::Config;
+use crate::browser::{OpenTabs, TabAction};
+use crate::config::{Browser, Config};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{AnyThread, MainThreadMarker, MainThreadOnly};
@@ -14,7 +15,11 @@ use std::ptr::{null_mut, NonNull};
 const W: f64 = 560.0;
 const H: f64 = 58.0;
 const FONT: f64 = 22.0;
-/// The window's own corner radius, so the YouTube border follows the panel's edge.
+const TAB_ROWS: usize = 9;
+const ROW_HEIGHT: f64 = 30.0;
+const TABS_HEADER_HEIGHT: f64 = 38.0;
+
+/// The window's own corner radius, so the mode border follows the panel's edge.
 fn corner_radius() -> f64 {
     if NSProcessInfo::processInfo().operatingSystemVersion().majorVersion >= 26 { 16.0 } else { 10.0 }
 }
@@ -23,11 +28,22 @@ pub struct Launcher {
     panel: Retained<NSPanel>,
     query_label: Retained<NSTextField>,
     shortcut_label: Retained<NSTextField>,
-    youtube_border: Retained<NSBox>,
+    mode_border: Retained<NSBox>,
+    tab_list: Retained<NSView>,
+    tab_header: Retained<NSTextField>,
+    tab_highlight: Retained<NSBox>,
+    tab_rows: Vec<(Retained<NSTextField>, Retained<NSTextField>)>,
     shown: Cell<bool>,
-    youtube: Cell<bool>,
+    mode: Cell<Mode>,
     state: RefCell<State>,
     _observers: RefCell<Vec<Retained<AnyObject>>>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Mode {
+    Apps,
+    YouTube,
+    BrowserTabs(Browser),
 }
 
 #[derive(Default)]
@@ -35,6 +51,7 @@ struct State {
     query: String,
     sel: usize,
     matches: Vec<usize>,
+    browser_tabs: Option<OpenTabs>,
 }
 
 thread_local! {
@@ -139,30 +156,57 @@ pub fn init(mtm: MainThreadMarker) {
     shortcut_label.setAlignment(NSTextAlignment::Right);
     content.addSubview(&shortcut_label);
 
-    // YouTube mode: a thin, soft red border with a faint glow, hidden otherwise.
-    let youtube_border = NSBox::initWithFrame(NSBox::alloc(mtm), rect);
-    youtube_border.setBoxType(NSBoxType::Custom);
-    youtube_border.setTitlePosition(NSTitlePosition::NoTitle);
-    youtube_border.setFillColor(&NSColor::clearColor());
-    youtube_border.setBorderWidth(1.5);
-    youtube_border.setCornerRadius(corner_radius());
-    youtube_border.setBorderColor(&NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.0, 0.0, 0.55));
-    let glow = NSShadow::new();
-    glow.setShadowColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.0, 0.0, 0.5)));
-    glow.setShadowBlurRadius(6.0);
-    glow.setShadowOffset(NSSize::new(0.0, 0.0));
-    youtube_border.setWantsLayer(true);
-    youtube_border.setShadow(Some(&glow));
-    youtube_border.setHidden(true);
-    content.addSubview(&youtube_border);
+    let resize = NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable;
+    let tab_list = NSView::initWithFrame(NSView::alloc(mtm), rect);
+    tab_list.setAutoresizingMask(resize);
+    tab_list.setHidden(true);
+    content.addSubview(&tab_list);
+    let tab_header = NSTextField::labelWithString(&NSString::new(), mtm);
+    tab_header.setFont(Some(&NSFont::systemFontOfSize(13.0)));
+    tab_header.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    tab_list.addSubview(&tab_header);
+    let tab_highlight = NSBox::initWithFrame(NSBox::alloc(mtm), NSRect::ZERO);
+    tab_highlight.setBoxType(NSBoxType::Custom);
+    tab_highlight.setTitlePosition(NSTitlePosition::NoTitle);
+    tab_highlight.setBorderWidth(0.0);
+    tab_highlight.setCornerRadius(6.0);
+    tab_highlight.setFillColor(&NSColor::systemBlueColor().colorWithAlphaComponent(0.22));
+    tab_list.addSubview(&tab_highlight);
+    let tab_rows = (0..TAB_ROWS).map(|_| {
+        let title = NSTextField::labelWithString(&NSString::new(), mtm);
+        title.setFont(Some(&NSFont::systemFontOfSize(16.0)));
+        title.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+        tab_list.addSubview(&title);
+        let number = NSTextField::labelWithString(&NSString::new(), mtm);
+        number.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(14.0, unsafe { NSFontWeightRegular })));
+        number.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        number.setAlignment(NSTextAlignment::Right);
+        tab_list.addSubview(&number);
+        (title, number)
+    }).collect();
+
+    let mode_border = NSBox::initWithFrame(NSBox::alloc(mtm), rect);
+    mode_border.setAutoresizingMask(resize);
+    mode_border.setBoxType(NSBoxType::Custom);
+    mode_border.setTitlePosition(NSTitlePosition::NoTitle);
+    mode_border.setFillColor(&NSColor::clearColor());
+    mode_border.setBorderWidth(1.5);
+    mode_border.setCornerRadius(corner_radius());
+    mode_border.setWantsLayer(true);
+    mode_border.setHidden(true);
+    content.addSubview(&mode_border);
 
     let launcher = Launcher {
         panel,
         query_label,
         shortcut_label,
-        youtube_border,
+        mode_border,
+        tab_list,
+        tab_header,
+        tab_highlight,
+        tab_rows,
         shown: Cell::new(false),
-        youtube: Cell::new(false),
+        mode: Cell::new(Mode::Apps),
         state: RefCell::new(State::default()),
         _observers: RefCell::new(vec![]),
     };
@@ -202,18 +246,33 @@ pub fn with<R>(f: impl FnOnce(&Launcher) -> R) -> Option<R> {
 }
 
 impl Launcher {
-    /// Opens the launcher (or with `youtube`, YouTube search); closes it if that one is open.
-    pub fn toggle(&self, youtube: bool) {
-        if self.shown.get() && self.youtube.get() == youtube { self.hide() } else { self.show(youtube) }
+    /// Toggle the active mode or switch to a different one.
+    pub fn toggle(&self, mode: Mode) {
+        if self.shown.get() && self.mode.get() == mode { self.hide() } else { self.show(mode) }
     }
 
-    pub fn show(&self, youtube: bool) {
-        self.youtube.set(youtube);
-        self.youtube_border.setHidden(!youtube);
-        {
-            let mut s = self.state.borrow_mut();
-            s.query.clear();
-            s.sel = 0;
+    fn show(&self, mode: Mode) {
+        self.mode.set(mode);
+        *self.state.borrow_mut() = State::default();
+        let in_tabs = matches!(mode, Mode::BrowserTabs(_));
+        self.query_label.setHidden(in_tabs);
+        self.tab_list.setHidden(!in_tabs);
+        self.mode_border.setHidden(mode == Mode::Apps);
+        if mode != Mode::Apps {
+            let (r, g, b) = if in_tabs { (0.19, 0.53, 1.0) } else { (1.0, 0.0, 0.0) };
+            self.mode_border.setBorderColor(&NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 0.55));
+            let glow = NSShadow::new();
+            glow.setShadowColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 0.5)));
+            glow.setShadowBlurRadius(6.0);
+            glow.setShadowOffset(NSSize::new(0.0, 0.0));
+            self.mode_border.setShadow(Some(&glow));
+        }
+        if let Mode::BrowserTabs(browser) = mode {
+            self.shortcut_label.setHidden(true);
+            self.refresh_browser_tabs(browser);
+        } else {
+            self.set_height(H);
+            self.render();
         }
         // Center horizontally on the screen with the mouse, upper third.
         let mtm = self.panel.mtm();
@@ -231,11 +290,20 @@ impl Launcher {
             let f = screen.frame();
             let top = f.origin.y + f.size.height * 0.72;
             let x = f.origin.x + ((f.size.width - W) / 2.0).round();
-            self.panel.setFrame_display(NSRect::new(NSPoint::new(x, top - H), NSSize::new(W, H)), false);
+            let height = self.panel.frame().size.height;
+            self.panel.setFrame_display(NSRect::new(NSPoint::new(x, top - height), NSSize::new(W, height)), false);
         }
-        self.render();
         self.shown.set(true);
         self.panel.makeKeyAndOrderFront(None);
+    }
+
+    fn set_height(&self, height: f64) {
+        let mut frame = self.panel.frame();
+        if frame.size.height != height {
+            frame.origin.y += frame.size.height - height;
+            frame.size.height = height;
+            self.panel.setFrame_display(frame, false);
+        }
     }
 
     pub fn hide(&self) {
@@ -248,6 +316,9 @@ impl Launcher {
     fn on_key(&self, ev: &NSEvent) -> bool {
         if !self.shown.get() {
             return false;
+        }
+        if let Mode::BrowserTabs(browser) = self.mode.get() {
+            return self.on_tab_key(ev, browser);
         }
         let flags = ev.modifierFlags();
         match ev.keyCode() {
@@ -280,9 +351,119 @@ impl Launcher {
         true
     }
 
+    fn on_tab_key(&self, ev: &NSEvent, browser: Browser) -> bool {
+        let modifiers = NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option;
+        if ev.modifierFlags().intersects(modifiers) {
+            return false;
+        }
+        let selected = self.state.borrow().sel;
+        match ev.keyCode() {
+            53 => self.hide(),
+            36 | 76 => self.act_on_tab(browser, selected, TabAction::Select),
+            125 => self.move_sel(1),
+            126 => self.move_sel(-1),
+            _ => {
+                let key = ev.charactersIgnoringModifiers().and_then(|c| c.to_string().chars().next());
+                match key {
+                    Some('j' | 'J') => self.move_sel(1),
+                    Some('k' | 'K') => self.move_sel(-1),
+                    Some('d' | 'D') => {
+                        if !ev.isARepeat() {
+                            self.act_on_tab(browser, selected, TabAction::Close);
+                        }
+                    }
+                    Some(key @ '1'..='9') => {
+                        let index = selected / TAB_ROWS * TAB_ROWS + (key as usize - '1' as usize);
+                        self.act_on_tab(browser, index, TabAction::Select);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        true
+    }
+
+    fn act_on_tab(&self, browser: Browser, index: usize, action: TabAction) {
+        let success = {
+            let state = self.state.borrow();
+            let Some(pages) = &state.browser_tabs else { return };
+            if index >= pages.tabs.len() {
+                return;
+            }
+            pages.act(browser, index, action)
+        };
+        if success && action == TabAction::Select {
+            self.hide();
+        } else {
+            self.refresh_browser_tabs(browser);
+        }
+    }
+
+    fn refresh_browser_tabs(&self, browser: Browser) {
+        let tabs = crate::browser::open_tabs(browser);
+        let count = tabs.as_ref().map_or(0, |pages| pages.tabs.len());
+        let mut state = self.state.borrow_mut();
+        state.sel = state.sel.min(count.saturating_sub(1));
+        state.browser_tabs = tabs;
+        drop(state);
+        self.render();
+    }
+
+    fn render_browser_tabs(&self, browser: Browser) {
+        let state = self.state.borrow();
+        let tabs = state.browser_tabs.as_ref().map_or(&[][..], |pages| pages.tabs.as_slice());
+        let start = state.sel / TAB_ROWS * TAB_ROWS;
+        let end = (start + TAB_ROWS).min(tabs.len());
+        let visible = &tabs[start..end];
+        let height = TABS_HEADER_HEIGHT + ROW_HEIGHT * visible.len().max(1) as f64 + 10.0;
+        self.set_height(height);
+
+        let heading = if tabs.len() > TAB_ROWS {
+            format!("{browser}  ·  {}–{end} of {}", start + 1, tabs.len())
+        } else {
+            browser.to_string()
+        };
+        self.tab_header.setStringValue(&NSString::from_str(&heading));
+        self.tab_header.setFrame(NSRect::new(NSPoint::new(20.0, height - 29.0), NSSize::new(W - 40.0, 18.0)));
+        self.tab_highlight.setHidden(visible.is_empty());
+        for (i, (title, number)) in self.tab_rows.iter().enumerate() {
+            let tab = visible.get(i);
+            let empty = i == 0 && visible.is_empty();
+            title.setHidden(tab.is_none() && !empty);
+            number.setHidden(tab.is_none());
+            if tab.is_none() && !empty {
+                continue;
+            }
+            let y = height - TABS_HEADER_HEIGHT - ROW_HEIGHT * (i + 1) as f64;
+            let text = if let Some(tab) = tab {
+                tab.label()
+            } else if state.browser_tabs.is_some() {
+                "No open tabs"
+            } else {
+                "Couldn’t read open tabs"
+            };
+            let text = text.replace(['\n', '\r', '\t'], " ");
+            title.setStringValue(&NSString::from_str(&text));
+            title.setFrame(NSRect::new(NSPoint::new(20.0, y + 3.0), NSSize::new(W - 72.0, 24.0)));
+            if tab.is_some() {
+                number.setStringValue(&NSString::from_str(&(i + 1).to_string()));
+                number.setFrame(NSRect::new(NSPoint::new(W - 42.0, y + 4.0), NSSize::new(22.0, 22.0)));
+                if start + i == state.sel {
+                    self.tab_highlight.setFrame(NSRect::new(
+                        NSPoint::new(12.0, y),
+                        NSSize::new(W - 24.0, ROW_HEIGHT),
+                    ));
+                }
+            }
+        }
+    }
+
     fn move_sel(&self, d: isize) {
         let mut s = self.state.borrow_mut();
-        let n = s.matches.len() as isize;
+        let n = match self.mode.get() {
+            Mode::BrowserTabs(_) => s.browser_tabs.as_ref().map_or(0, |pages| pages.tabs.len()),
+            _ => s.matches.len(),
+        } as isize;
         if n > 0 {
             s.sel = ((s.sel as isize + d).rem_euclid(n)) as usize;
         }
@@ -291,7 +472,7 @@ impl Launcher {
     }
 
     fn launch_selected(&self) {
-        if self.youtube.get() {
+        if self.mode.get() == Mode::YouTube {
             let query = self.state.borrow().query.trim().to_string();
             self.hide();
             debug!("youtube: return pressed, query {query:?}");
@@ -318,7 +499,12 @@ impl Launcher {
     }
 
     fn render(&self) {
-        let youtube = self.youtube.get();
+        let mode = self.mode.get();
+        if let Mode::BrowserTabs(browser) = mode {
+            self.render_browser_tabs(browser);
+            return;
+        }
+        let youtube = mode == Mode::YouTube;
         let (query, name) = {
             let mut s = self.state.borrow_mut();
             let open_config = !youtube && is_config_query(&s.query);

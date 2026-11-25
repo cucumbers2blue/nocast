@@ -6,6 +6,7 @@
 //   full      opt+up         (also: left, right, next)
 //   browser   chrome         (websites in Chrome or Helium instead of Safari)
 //   youtube-search opt+cmd+y (the default; `youtube-search off` turns it off)
+//   browser-tabs   opt+cmd+l (the default; `browser-tabs off` turns it off)
 
 use std::path::PathBuf;
 
@@ -30,6 +31,9 @@ Finder
 # Search YouTube in the browser. opt+cmd+y unless changed here (or: off).
 # youtube-search   opt+cmd+y
 
+# List tabs across the browser's windows. opt+cmd+l unless changed here (or: off).
+# browser-tabs     opt+cmd+l
+
 full    opt+up
 left    opt+left
 right   opt+right
@@ -41,6 +45,7 @@ next    opt+cmd+up
 
 /// The YouTube search hotkey unless the config sets `youtube-search`.
 pub const YOUTUBE: &str = "opt+cmd+y";
+pub const BROWSER_TABS: &str = "opt+cmd+l";
 
 pub const CMD: u64 = 0x100000;
 pub const OPT: u64 = 0x80000;
@@ -93,6 +98,7 @@ pub enum Win {
 pub enum Action {
     Launcher,
     YouTube,
+    BrowserTabs,
     App(usize),
     Win(Win),
 }
@@ -119,6 +125,7 @@ pub struct App {
 pub struct Config {
     pub launcher: Option<Hotkey>,
     pub youtube: Option<Hotkey>,
+    pub browser_tabs: Option<Hotkey>,
     pub apps: Vec<App>,
     pub win: Vec<(Hotkey, Win)>,
     pub debug: bool,
@@ -137,12 +144,19 @@ impl Config {
         if let Some((_, w)) = self.win.iter().find(|(h, _)| *h == hk) {
             return Some(Action::Win(*w));
         }
-        // Last, so a hotkey you assigned yourself wins over the default.
-        (self.youtube == Some(hk)).then_some(Action::YouTube)
+        // App, website and window bindings take precedence over these modes.
+        if self.youtube == Some(hk) {
+            return Some(Action::YouTube);
+        }
+        (self.browser_tabs == Some(hk)).then_some(Action::BrowserTabs)
     }
 
     pub fn parse(text: &str) -> Config {
-        let mut cfg = Config { youtube: parse_hotkey(YOUTUBE), ..Config::default() };
+        let mut cfg = Config {
+            youtube: parse_hotkey(YOUTUBE),
+            browser_tabs: parse_hotkey(BROWSER_TABS),
+            ..Config::default()
+        };
         for (n, raw) in text.lines().enumerate() {
             let line = raw.split('#').next().unwrap_or("").trim();
             if line.is_empty() {
@@ -163,11 +177,16 @@ impl Config {
                 }
                 continue;
             }
-            if first.eq_ignore_ascii_case("youtube-search") && !rest.trim().is_empty() {
-                match rest.trim().to_lowercase().as_str() {
-                    "off" | "none" => cfg.youtube = None,
+            let mode_hotkey = match first.to_ascii_lowercase().as_str() {
+                "youtube-search" => Some(&mut cfg.youtube),
+                "browser-tabs" => Some(&mut cfg.browser_tabs),
+                _ => None,
+            };
+            if let Some(hotkey) = mode_hotkey.filter(|_| !rest.trim().is_empty()) {
+                match rest.trim().to_ascii_lowercase().as_str() {
+                    "off" | "none" => *hotkey = None,
                     r => match parse_hotkey(r) {
-                        Some(h) => cfg.youtube = Some(h),
+                        Some(h) => *hotkey = Some(h),
                         None => log!("config line {}: bad hotkey: {raw}", n + 1),
                     },
                 }
@@ -422,6 +441,23 @@ mod tests {
         // "YouTube" is still an ordinary app or website name.
         let c = Config::parse("YouTube youtube.com opt+y\n");
         assert_eq!(c.apps[0].url.as_deref(), Some("https://youtube.com"));
+    }
+
+    #[test]
+    fn browser_tabs_hotkey() {
+        let default = parse_hotkey("opt+cmd+l").unwrap();
+        assert_eq!(Config::parse(DEFAULT).browser_tabs, Some(default));
+        assert!(matches!(Config::parse("").lookup(default.key, default.mods), Some(Action::BrowserTabs)));
+
+        let custom = Config::parse("browser helium\nBrowser-Tabs ctrl+opt+l\n");
+        assert_eq!(custom.browser, Browser::Helium);
+        assert!(matches!(custom.lookup(default.key, CTRL | OPT), Some(Action::BrowserTabs)));
+        assert!(custom.lookup(default.key, default.mods).is_none());
+        assert!(Config::parse("browser-tabs off").lookup(default.key, default.mods).is_none());
+        assert!(matches!(
+            Config::parse("Safari opt+cmd+l").lookup(default.key, default.mods),
+            Some(Action::App(0))
+        ));
     }
 
     #[test]
